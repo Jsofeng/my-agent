@@ -5,10 +5,6 @@ from smolagents import (
     load_tool,
 )
 import litellm
-import smolagents
-
-print("[DEBUG] LiteLLM version:", litellm.__version__)
-print("[DEBUG] Smolagents version:", smolagents.__version__)
 
 litellm._turn_on_debug()
 
@@ -20,9 +16,6 @@ from tools.weather import get_weather
 from Gradio_UI import GradioUI
 
 load_dotenv()
-
-print("[DEBUG] groq_agent.py is running")
-print(f"[DEBUG] Model ID: groq/qwen/qwen3.8-27b")
 
 model = LiteLLMModel(
     model_id="groq/qwen/qwen3.8-27b",
