@@ -17,6 +17,9 @@ from Gradio_UI import GradioUI
 
 load_dotenv()
 
+print("[DEBUG] groq_agent.py is running")
+print(f"[DEBUG] Model ID: groq/qwen/qwen3.8-27b")
+
 model = LiteLLMModel(
     model_id="groq/qwen/qwen3.8-27b",
     api_key=os.getenv("GROQ_API_KEY"),
