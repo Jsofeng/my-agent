@@ -1,18 +1,25 @@
+import litellm
+import os
+
 from smolagents import (
     CodeAgent,
     DuckDuckGoSearchTool,
     LiteLLMModel,
     load_tool,
 )
-import litellm
 
-litellm._turn_on_debug()
-
-import os
 
 from dotenv import load_dotenv
 from tools.final_answer import FinalAnswerTool
 from tools.weather import get_weather
+from tools.stocks import (
+    get_stock_info,
+    get_stock_price,
+    get_stock_news,
+    get_stock_updates,
+    get_upcoming_earnings,
+    get_new_ipos,
+)
 from Gradio_UI import GradioUI
 
 load_dotenv()
@@ -37,10 +44,16 @@ agent = CodeAgent(
     tools=[
         final_answer,
         get_weather,
+        get_stock_info,
+        get_stock_price,
+        get_stock_news,
+        get_stock_updates,
+        get_upcoming_earnings,
+        get_new_ipos,
         DuckDuckGoSearchTool(),
         image_generation_tool,
     ],
-    max_steps=6,
+    max_steps=10,
     verbosity_level=1,
     planning_interval=None,
     name=None,
