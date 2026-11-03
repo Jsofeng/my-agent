@@ -126,7 +126,7 @@ def pull_messages_from_step(
 def stream_to_gradio(
     agent,
     task: str,
-    reset_agent_memory: bool = False,
+    reset_agent_memory: bool = True,
     additional_args: Optional[dict] = None,
 ):
     """Runs an agent with the given task and streams the messages from the agent as gradio ChatMessages."""
@@ -194,7 +194,7 @@ class GradioUI:
 
         messages.append(gr.ChatMessage(role="user", content=prompt))
         yield messages
-        for msg in stream_to_gradio(self.agent, task=prompt, reset_agent_memory=False):
+        for msg in stream_to_gradio(self.agent, task=prompt, reset_agent_memory=True):
             messages.append(msg)
             yield messages
         yield messages
