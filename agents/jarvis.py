@@ -20,6 +20,8 @@ from tools.stocks import (
     get_upcoming_earnings,
     get_new_ipos,
 )
+from tools.email import generate_draft, send_confirmed_draft, reject_draft
+
 from Gradio_UI import GradioUI
 
 load_dotenv()
@@ -50,6 +52,7 @@ agent = CodeAgent(
         get_stock_updates,
         get_upcoming_earnings,
         get_new_ipos,
+        generate_draft,
         DuckDuckGoSearchTool(),
         image_generation_tool,
     ],
@@ -60,7 +63,30 @@ agent = CodeAgent(
     description=None
 )
 
-GradioUI(agent).launch(
+class EmailConfirmationUI(GradioUI):
+    """Handle confirmation commands from the actual chat input, outside the LLM."""
+    def interact_with_agent(self, prompt, messages):
+        import re
+        import gradio as gr
+
+        text = (prompt or "").strip()
+        match = re.fullmatch(r"(send|reject)\s+([0-9a-fA-F-]{36})", text, re.IGNORECASE)
+        if match:
+            messages.append(gr.ChatMessage(role="user", content=text))
+            yield messages
+            action, draft_id = match.group(1).lower(), match.group(2)
+            try:
+                result = (send_confirmed_draft(draft_id) if action == "send"
+                          else reject_draft(draft_id))
+            except Exception as exc:
+                result = f"Email action failed: {exc}"
+            messages.append(gr.ChatMessage(role="assistant", content=result))
+            yield messages
+            return
+        yield from super().interact_with_agent(prompt, messages)
+
+
+EmailConfirmationUI(agent).launch(
     server_name="0.0.0.0",
     server_port=int(os.environ.get("PORT", 10000))
 )
