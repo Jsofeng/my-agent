@@ -4,6 +4,7 @@ import os
 import re
 import sqlite3
 import uuid
+import logging, traceback
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,18 +32,11 @@ def _config_path(env_name, default):
 
 
 def _service():
-    """Load credentials only during a user-requested calendar operation."""
-    client_secret = _config_path("GOOGLE_CLIENT_SECRET_FILE", "credentials.json")
-    token_file = _config_path("GOOGLE_TOKEN_FILE", "token.json")
-    if not client_secret.is_file():
-        raise CalendarSetupError(
-            "Google Calendar is not configured. Add your OAuth client file as "
-            "credentials.json (or set GOOGLE_CLIENT_SECRET_FILE) and authenticate."
-        )
+    
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
+      
         from googleapiclient.discovery import build
     except ImportError as exc:
         raise CalendarSetupError(
@@ -50,24 +44,67 @@ def _service():
         ) from exc
 
     try:
-        credentials = None
-        if token_file.is_file():
+        raw = os.getenv("GOOGLE_TOKEN_JSON")
+        if raw:
+            credentials = Credentials.from_authorized_user_info(json.loads(raw), _SCOPE)
+        else:
+            token_file = _config_path("GOOGLE_TOKEN_FILE", "token.json")
+            if not token_file.is_file():
+                raise CalendarSetupError("No Google token found. Set GOOGLE_TOKEN_JSON.")
             credentials = Credentials.from_authorized_user_file(str(token_file), _SCOPE)
-        if credentials and credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
-        if not credentials or not credentials.valid:
-            flow = InstalledAppFlow.from_client_secrets_file(str(client_secret), _SCOPE)
-            credentials = flow.run_local_server(port=0)
-        token_file.parent.mkdir(parents=True, exist_ok=True)
-        token_file.write_text(credentials.to_json(), encoding="utf-8")
+
+        if not credentials.valid:
+            if not credentials.refresh_token:
+                raise CalendarSetupError("Token has no refresh token. Re-authenticate locally and update GOOGLE_TOKEN_JSON.")
+            credentials.refresh(Request())  # kept in memory only
+
         return build("calendar", "v3", credentials=credentials, cache_discovery=False)
     except CalendarSetupError:
         raise
     except Exception as exc:
-        # Do not include low-level Google auth exceptions; they may contain private paths/details.
+        logging.error("Calendar auth failed: %r\n%s", exc, traceback.format_exc())
         raise CalendarSetupError(
             "Google Calendar authentication failed. Check the local OAuth configuration and authenticate again."
         ) from exc
+    
+# def _service():
+#     """Load credentials only during a user-requested calendar operation."""
+#     client_secret = _config_path("GOOGLE_CLIENT_SECRET_FILE", "credentials.json")
+#     token_file = _config_path("GOOGLE_TOKEN_FILE", "token.json")
+#     if not client_secret.is_file():
+#         raise CalendarSetupError(
+#             "Google Calendar is not configured. Add your OAuth client file as "
+#             "credentials.json (or set GOOGLE_CLIENT_SECRET_FILE) and authenticate."
+#         )
+#     try:
+#         from google.auth.transport.requests import Request
+#         from google.oauth2.credentials import Credentials
+#         from google_auth_oauthlib.flow import InstalledAppFlow
+#         from googleapiclient.discovery import build
+#     except ImportError as exc:
+#         raise CalendarSetupError(
+#             "Google Calendar dependencies are missing. Install the Google API packages in requirements.txt."
+#         ) from exc
+
+#     try:
+#         credentials = None
+#         if token_file.is_file():
+#             credentials = Credentials.from_authorized_user_file(str(token_file), _SCOPE)
+#         if credentials and credentials.expired and credentials.refresh_token:
+#             credentials.refresh(Request())
+#         if not credentials or not credentials.valid:
+#             flow = InstalledAppFlow.from_client_secrets_file(str(client_secret), _SCOPE)
+#             credentials = flow.run_local_server(port=0)
+#         token_file.parent.mkdir(parents=True, exist_ok=True)
+#         token_file.write_text(credentials.to_json(), encoding="utf-8")
+#         return build("calendar", "v3", credentials=credentials, cache_discovery=False)
+#     except CalendarSetupError:
+#         raise
+#     except Exception as exc:
+#         # Do not include low-level Google auth exceptions; they may contain private paths/details.
+#         raise CalendarSetupError(
+#             "Google Calendar authentication failed. Check the local OAuth configuration and authenticate again."
+#         ) from exc
 
 
 def _parse_time(value, tz_name=None):
