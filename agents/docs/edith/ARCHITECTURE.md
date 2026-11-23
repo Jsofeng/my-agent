@@ -8,6 +8,8 @@ Each repository instance uses a SQLite connection local to each thread. SQLite r
 
 The Gradio chat currently stores display messages in `gr.State` but sends each new prompt as an individual task. The adapter will use a delimited task prefix for retrieved context. Memory errors must fail open at that boundary.
 
+When `EDITH_ENABLED` is true, Jarvis creates an app-launch conversation, appends retrieved context to the internal task while leaving the visible user message unchanged, and installs the `save_memory` and `search_memory` tools. The system prompt then marks memory as untrusted data and prohibits invented history. Memory retrieval failures log only the exception type and leave the original task intact. The explicit save tool rejects secret-like strings and holds detected sensitive-category candidates in `pending_confirmations` instead of inserting them into `memories`.
+
 The extraction pre-filter will skip empty/very short acknowledgements, generic requests with no user-specific details, and command-like turns. It will retain batches containing first-person facts, preferences, plans, decisions, events, or explicit corrections. Extraction runs asynchronously and does not block the response.
 
 Encryption at rest is intentionally out of scope and remains future work.

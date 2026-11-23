@@ -194,10 +194,15 @@ class GradioUI:
 
         messages.append(gr.ChatMessage(role="user", content=prompt))
         yield messages
-        for msg in stream_to_gradio(self.agent, task=prompt, reset_agent_memory=False):
+        task = self.prepare_agent_task(prompt)
+        for msg in stream_to_gradio(self.agent, task=task, reset_agent_memory=False):
             messages.append(msg)
             yield messages
         yield messages
+
+    def prepare_agent_task(self, prompt):
+        """Hook for subclasses to add private task context without changing display history."""
+        return prompt
 
     def upload_file(
         self,

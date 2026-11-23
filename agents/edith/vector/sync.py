@@ -10,6 +10,7 @@ from typing import Optional
 import numpy as np
 
 from ..db.repository import MemoryRepository, utc_now
+from ..config import config
 from ..embeddings.base import Embedder
 from .base import VectorStore
 from .faiss_store import FaissVectorStore
@@ -114,9 +115,11 @@ class VectorSynchronizer:
 
     def search(self, query: str, top_k: int = 8, layer: Optional[str] = None,
                kind: Optional[str] = None, subject: Optional[str] = None,
-               min_similarity: float = -1.0) -> list[dict[str, object]]:
+               min_similarity: Optional[float] = None) -> list[dict[str, object]]:
         if top_k < 1 or top_k > 100:
             raise ValueError("top_k must be between 1 and 100")
+        if min_similarity is None:
+            min_similarity = config.min_similarity
         query_vector = self._normalized(self.embedder.embed([query])[0])
         candidates = self.store.search(query_vector, min(1000, max(top_k * 8, top_k)))
         if not candidates:
