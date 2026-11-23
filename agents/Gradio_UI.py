@@ -222,6 +222,41 @@ class GradioUI:
         """Hook for persistence or post-response work after the assistant finishes."""
         return None
 
+    def build_additional_tabs(self, gr):
+        """Hook for optional feature tabs that leave the chat components unchanged."""
+        return None
+
+    def has_additional_tabs(self):
+        """Whether this UI subclass contributes tabs alongside the original chat view."""
+        return False
+
+    def build_chat_view(self, gr):
+        """Build the existing chat controls without changing their labels or handlers."""
+        stored_messages = gr.State([])
+        file_uploads_log = gr.State([])
+        chatbot = gr.Chatbot(
+            label="Agent",
+            avatar_images=(
+                None,
+                "https://huggingface.co/datasets/agents-course/course-images/resolve/main/en/communication/Alfred.png",
+            ),
+            scale=1,
+        )
+        if self.file_upload_folder is not None:
+            upload_file = gr.File(label="Upload a file")
+            upload_status = gr.Textbox(label="Upload Status", interactive=False, visible=False)
+            upload_file.change(
+                self.upload_file,
+                [upload_file, file_uploads_log],
+                [upload_status, file_uploads_log],
+            )
+        text_input = gr.Textbox(lines=1, label="Chat Message")
+        text_input.submit(
+            self.log_user_message,
+            [text_input, file_uploads_log],
+            [stored_messages, text_input],
+        ).then(self.interact_with_agent, [stored_messages, chatbot], [chatbot])
+
     def upload_file(
         self,
         file,
@@ -285,31 +320,13 @@ class GradioUI:
         import gradio as gr
 
         with gr.Blocks(fill_height=True) as demo:
-            stored_messages = gr.State([])
-            file_uploads_log = gr.State([])
-            chatbot = gr.Chatbot(
-                label="Agent",
-                avatar_images=(
-                    None,
-                    "https://huggingface.co/datasets/agents-course/course-images/resolve/main/en/communication/Alfred.png",
-                ),
-                scale=1,
-            )
-            # If an upload folder is provided, enable the upload feature
-            if self.file_upload_folder is not None:
-                upload_file = gr.File(label="Upload a file")
-                upload_status = gr.Textbox(label="Upload Status", interactive=False, visible=False)
-                upload_file.change(
-                    self.upload_file,
-                    [upload_file, file_uploads_log],
-                    [upload_status, file_uploads_log],
-                )
-            text_input = gr.Textbox(lines=1, label="Chat Message")
-            text_input.submit(
-                self.log_user_message,
-                [text_input, file_uploads_log],
-                [stored_messages, text_input],
-            ).then(self.interact_with_agent, [stored_messages, chatbot], [chatbot])
+            if self.has_additional_tabs():
+                with gr.Tabs():
+                    with gr.Tab("Chat"):
+                        self.build_chat_view(gr)
+                    self.build_additional_tabs(gr)
+            else:
+                self.build_chat_view(gr)
 
         demo.launch(debug=True, share=True, **kwargs)
 

@@ -185,6 +185,47 @@ class MemoryRepository:
             self.connections.get().commit()
             return memory_id
 
+    def supersede_memory(self, memory_id: int, item: MemoryInput) -> int:
+        """Atomically preserve an old fact and insert its replacement."""
+        self._validate_memory(item)
+        now = utc_now()
+        digest = hashlib.sha256(item.content.strip().encode("utf-8")).hexdigest()
+        with self._write_lock:
+            db = self.connections.get()
+            try:
+                old = db.execute(
+                    "SELECT id FROM memories WHERE id=? AND user_id=? AND status='active'",
+                    (int(memory_id), self.user_id),
+                ).fetchone()
+                if old is None:
+                    raise ValueError("active memory does not exist")
+                db.execute("UPDATE memories SET status='superseded',valid_to=?,updated_at=? WHERE id=?",
+                           (now, now, int(memory_id)))
+                self._event(int(memory_id), "supersede")
+                cursor = db.execute(
+                    """INSERT INTO memories(uuid,user_id,layer,kind,content,subject,predicate,importance,
+                    confidence,provenance,index_status,occurred_at,valid_from,source_conversation_id,
+                    source_message_ids,content_hash,embedding,embedding_model,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?)""",
+                    (str(uuid.uuid4()), self.user_id, item.layer, item.kind, item.content, item.subject,
+                     item.predicate, item.importance, item.confidence, item.provenance, item.occurred_at,
+                     item.valid_from or now, item.source_conversation_id, item.source_message_ids, digest,
+                     item.embedding, item.embedding_model, now, now),
+                )
+                new_id = int(cursor.lastrowid)
+                db.execute(
+                    "INSERT OR IGNORE INTO memory_entities(memory_id,entity_id,role) "
+                    "SELECT ?,entity_id,role FROM memory_entities WHERE memory_id=?",
+                    (new_id, int(memory_id)),
+                )
+                db.execute("UPDATE memories SET superseded_by=? WHERE id=?", (new_id, int(memory_id)))
+                self._event(new_id, "create")
+                db.commit()
+                return new_id
+            except Exception:
+                db.rollback()
+                raise
+
     @staticmethod
     def _validate_memory(item: MemoryInput) -> None:
         if item.layer not in LAYERS:

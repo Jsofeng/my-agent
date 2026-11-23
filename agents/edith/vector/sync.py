@@ -53,6 +53,13 @@ class VectorSynchronizer:
         with self.repository._write_lock:
             self._update_index_state(self.repository.connections.get())
 
+    def remove_from_index(self, memory_id: int) -> None:
+        """Remove a superseded or archived ID from the derived active-memory index."""
+        self.store.remove(int(memory_id))
+        self.store.save(self.index_path)
+        with self.repository._write_lock:
+            self._update_index_state(self.repository.connections.get())
+
     def reconcile(self) -> dict[str, int | float | bool]:
         started = time.perf_counter()
         rebuilt = False

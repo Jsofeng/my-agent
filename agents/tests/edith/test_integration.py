@@ -95,12 +95,36 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("Want me to remember that?", first)
         self.assertEqual(second, "")
 
+    def test_sensitive_correction_supersedes_only_after_explicit_yes(self):
+        memory_id = self.add_memory("User works at OldCo")
+        self.synchronizer.index_memory(memory_id)
+        confirmations = PendingConfirmationService(self.repository, self.synchronizer)
+        adapter = JarvisMemoryAdapter(self.repository, self.synchronizer,
+                                      pending_confirmations=confirmations)
+        adapter.conversation_id = self.conversation_id
+        tools = {item.name: item for item in build_memory_tools(
+            self.repository, self.synchronizer, adapter)}
+        result = tools["update_memory"].forward(
+            memory_id=memory_id, new_content="User has a medical diagnosis")
+        self.assertIn("Want me to remember that?", result)
+        self.assertEqual(self.repository.get_memory(memory_id)["status"], "active")
+        answer = adapter.resolve_pending_response(self.conversation_id, "yes, remember that")
+        self.assertIn("remember", answer)
+        self.assertEqual(self.repository.get_memory(memory_id)["status"], "superseded")
+        current = self.repository.connections.get().execute(
+            "SELECT id,content FROM memories WHERE status='active' AND id<>?", (memory_id,)).fetchone()
+        self.assertIn("medical diagnosis", current["content"])
+        self.assertNotIn(memory_id, self.synchronizer.store.ids())
+        self.assertIn(current["id"], self.synchronizer.store.ids())
+
     def test_smolagents_save_and_search_tools_are_well_formed_and_safe(self):
         adapter = JarvisMemoryAdapter(self.repository, self.synchronizer)
         adapter.conversation_id = self.conversation_id
         tools = build_memory_tools(self.repository, self.synchronizer, adapter)
         by_name = {item.name: item for item in tools}
-        self.assertEqual(set(by_name), {"save_memory", "search_memory"})
+        self.assertEqual(set(by_name), {"save_memory", "search_memory", "update_memory", "delete_memory",
+                                        "get_user_profile", "get_recent_events", "get_project_context",
+                                        "list_memories"})
         self.assertIn("content", by_name["save_memory"].inputs)
         self.assertIn("top_k", by_name["search_memory"].inputs)
         saved = by_name["save_memory"].forward(
@@ -108,17 +132,33 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("Memory saved", saved)
         results = by_name["search_memory"].forward(query="workspace preference", top_k=4)
         self.assertIn("Prefers a quiet workspace", results)
+        profile = by_name["get_user_profile"].forward()
+        self.assertIn("Prefers a quiet workspace", profile)
+        listed = by_name["list_memories"].forward(page=1, page_size=10, status="active")
+        self.assertIn("ID 1", listed)
+        project = by_name["get_project_context"].forward(project_name="unknown project")
+        self.assertIn("No saved project context", project)
+        events = by_name["get_recent_events"].forward(days=30, top_k=10)
+        self.assertIn("No recent", events)
         rejected = by_name["save_memory"].forward(
             content="My key is sk-1234567890abcdefghijklmn")
         self.assertIn("not saved", rejected)
         invalid = by_name["search_memory"].forward(query="workspace", top_k=40)
         self.assertIn("top_k", invalid)
 
+        corrected = by_name["update_memory"].forward(memory_id=1,
+                                                      new_content="Prefers a silent workspace")
+        self.assertIn("history preserved", corrected)
+        self.assertEqual(self.repository.get_memory(1)["status"], "superseded")
+        current = self.repository.connections.get().execute(
+            "SELECT id FROM memories WHERE status='active' ORDER BY id DESC LIMIT 1").fetchone()[0]
+        removed = by_name["delete_memory"].forward(memory_id=current)
+        self.assertIn("was deleted", removed)
+
         sensitive = by_name["save_memory"].forward(
             content="I was diagnosed with diabetes", kind="profile_fact")
         self.assertIn("Want me to remember that?", sensitive)
-        self.assertEqual([row["content"] for row in self.repository.list_memories()],
-                         ["Prefers a quiet workspace"])
+        self.assertEqual(self.repository.list_memories(), [])
         pending = self.repository.connections.get().execute(
             "SELECT candidate_json FROM pending_confirmations WHERE conversation_id=?",
             (self.conversation_id,),

@@ -64,7 +64,7 @@ class PendingConfirmationService:
             pending_id, candidate_json = int(row[0]), row[1]
             candidate = json.loads(candidate_json)
             if yes:
-                memory_id = self.repository.create_memory(MemoryInput(
+                item = MemoryInput(
                     layer=candidate["layer"], kind=candidate["kind"], content=candidate["content"],
                     subject=candidate.get("subject"), predicate=candidate.get("predicate"),
                     importance=float(candidate.get("importance", 0.7)),
@@ -73,7 +73,23 @@ class PendingConfirmationService:
                     occurred_at=normalize_utc_timestamp(candidate.get("occurred_at"), self.user_timezone),
                     source_conversation_id=conversation_id,
                     source_message_ids=json.dumps(candidate.get("source_message_ids", [])),
-                ))
+                )
+                supersedes_id = candidate.get("supersedes_id")
+                if supersedes_id is not None:
+                    old = self.repository.get_memory(int(supersedes_id))
+                    if old is None or old["status"] != "active":
+                        db.execute("UPDATE pending_confirmations SET candidate_json='{}',status='expired' WHERE id=?",
+                                   (pending_id,))
+                        db.commit()
+                        return "That memory changed before confirmation, so the correction was not applied."
+                    memory_id = self.repository.supersede_memory(int(supersedes_id), item)
+                    try:
+                        self.synchronizer.remove_from_index(int(supersedes_id))
+                    except Exception as exc:
+                        logger.error("Superseded memory index removal deferred (memory_id=%d,error_type=%s)",
+                                     int(supersedes_id), type(exc).__name__)
+                else:
+                    memory_id = self.repository.create_memory(item)
                 for entity in candidate.get("entities", []):
                     entity_id = self.repository.add_entity(entity["name"], entity["type"])
                     self.repository.link_entity(memory_id, entity_id)

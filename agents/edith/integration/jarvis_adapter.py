@@ -22,6 +22,7 @@ class JarvisMemoryAdapter:
                  enabled: bool = True, context_token_budget: int = 600, top_k: int = 8,
                  worker: Optional[ExtractionWorker] = None,
                  pending_confirmations: Optional[PendingConfirmationService] = None,
+                 conflict_service=None,
                  settings: EdithConfig = config):
         self.repository = repository
         self.synchronizer = synchronizer
@@ -31,6 +32,7 @@ class JarvisMemoryAdapter:
         self.settings = settings
         self.worker = worker
         self.pending_confirmations = pending_confirmations
+        self.conflict_service = conflict_service
         self._ready = False
         self._init_lock = threading.Lock()
 
