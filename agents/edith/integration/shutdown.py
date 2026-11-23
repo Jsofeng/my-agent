@@ -7,6 +7,7 @@ import logging
 import signal
 import threading
 from .background_worker import ExtractionWorker
+from ..config import config
 
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,8 @@ _registration_lock = threading.Lock()
 _registered: set[int] = set()
 
 
-def register_shutdown_flush(worker: ExtractionWorker, timeout_seconds: float = 10.0) -> None:
+def register_shutdown_flush(worker: ExtractionWorker,
+                           timeout_seconds: float = config.shutdown_flush_timeout_seconds) -> None:
     worker_id = id(worker)
     with _registration_lock:
         if worker_id in _registered:

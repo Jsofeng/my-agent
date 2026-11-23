@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import numpy as np
 
 from ..db.repository import MemoryRepository, utc_now
@@ -39,15 +40,33 @@ class MemoryDeduplicator:
                   source_message_ids: str | None = None) -> None:
         with self.repository._write_lock:
             db = self.repository.connections.get()
+            row = db.execute(
+                "SELECT importance,confidence,source_message_ids FROM memories WHERE id=? AND user_id=?",
+                (int(memory_id), self.repository.user_id),
+            ).fetchone()
+            if row is None:
+                return
+            try:
+                sources = json.loads(row["source_message_ids"] or "[]")
+            except (TypeError, json.JSONDecodeError):
+                sources = []
+            if not isinstance(sources, list):
+                sources = []
+            try:
+                additions = json.loads(source_message_ids or "[]")
+            except (TypeError, json.JSONDecodeError):
+                additions = []
+            for value in additions if isinstance(additions, list) else []:
+                if value not in sources:
+                    sources.append(value)
+            bumped_importance = max(float(importance), min(1.0, float(row["importance"]) + 0.02))
+            bumped_confidence = max(float(confidence), min(1.0, float(row["confidence"]) + 0.02))
             db.execute(
                 "UPDATE memories SET importance=?,confidence=?,updated_at=?, "
-                "source_conversation_id=COALESCE(?,source_conversation_id), "
-                "source_message_ids=CASE WHEN ? IS NULL OR ?='[]' THEN source_message_ids "
-                "WHEN source_message_ids='[]' THEN ? ELSE source_message_ids END "
+                "source_conversation_id=COALESCE(?,source_conversation_id),source_message_ids=? "
                 "WHERE id=? AND user_id=?",
-                (importance, confidence, utc_now(), source_conversation_id,
-                 source_message_ids, source_message_ids, source_message_ids,
-                 memory_id, self.repository.user_id),
+                (bumped_importance, bumped_confidence, utc_now(), source_conversation_id,
+                 json.dumps(sources), int(memory_id), self.repository.user_id),
             )
             self.repository._event(memory_id, "reinforce")
             db.commit()

@@ -1,15 +1,19 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
 
+from edith.config import EdithConfig
+from edith.consolidation.consolidator import MemoryConsolidator
 from edith.db import MemoryRepository
+from edith.embeddings.base import Embedder
 from edith.models import MemoryInput
+from edith.vector import FaissVectorStore, VectorSynchronizer
 from edith.updating.conflicts import (ConflictDecision, LLMConflictAdjudicator,
                                       SemanticConflictService)
 from edith.updating.dedup import MemoryDeduplicator
-from edith.consolidation.consolidator import MemoryConsolidator
 from edith.consolidation.scheduler import create_scheduler
 
 
@@ -44,6 +48,10 @@ class UpdatingTests(unittest.TestCase):
         self.assertEqual(near["id"], first_id)
         dedup.reinforce(first_id, 0.9, 0.99)
         self.assertEqual(self.repo.get_memory(first_id)["importance"], 0.9)
+        dedup.reinforce(first_id, 0.5, 0.7, source_message_ids="[10,11]")
+        reinforced = self.repo.get_memory(first_id)
+        self.assertAlmostEqual(reinforced["importance"], 0.92)
+        self.assertEqual(json.loads(reinforced["source_message_ids"]), [10, 11])
         actions = [row[0] for row in self.repo.connections.get().execute(
             "SELECT action FROM memory_events WHERE memory_id=?", (first_id,)).fetchall()]
         self.assertIn("reinforce", actions)
@@ -113,6 +121,7 @@ class UpdatingTests(unittest.TestCase):
         self.assertEqual(again["archived"], 0)
         self.assertEqual(consolidator.unarchive(summary["id"]), 2)
         self.assertEqual(self.repo.get_memory(first_id)["status"], "active")
+        self.assertEqual(self.repo.get_memory(summary["id"])["status"], "archived")
 
     def test_interrupted_consolidation_is_recorded_and_safe_to_retry(self):
         self.repo.create_memory(self.memory("Event one", layer="episodic", kind="event",
@@ -120,6 +129,8 @@ class UpdatingTests(unittest.TestCase):
         self.repo.create_memory(self.memory("Event two", layer="episodic", kind="event",
                                             predicate="milestones"))
         class BrokenIndex:
+            def remove_from_index(self, memory_id):
+                return None
             def index_memory(self, memory_id):
                 raise RuntimeError("simulated index interruption")
         consolidator = MemoryConsolidator(self.repo, BrokenIndex())
@@ -140,6 +151,49 @@ class UpdatingTests(unittest.TestCase):
         self.assertEqual(job.max_instances, 1)
         self.assertTrue(job.coalesce)
         self.assertEqual(scheduler.state, 0)
+
+    def test_consolidator_merges_semantic_duplicates_and_flags_stale_facts(self):
+        class FlatEmbedder(Embedder):
+            model_name = "flat-consolidation"
+            dimension = 3
+            def embed(self, texts):
+                return np.tile(np.asarray([[1, 0, 0]], dtype=np.float32), (len(texts), 1))
+        settings = EdithConfig(database_path=self.root / "edith.db", index_path=self.root / "edith.faiss",
+                               stale_fact_days=0, stale_fact_max_accesses=0)
+        sync = VectorSynchronizer(self.repo, FlatEmbedder(), FaissVectorStore(3), settings.index_path)
+        first = self.repo.create_memory(self.memory("Can program in Python", kind="skill",
+                                                    predicate="skill"))
+        second = self.repo.create_memory(self.memory("Writes Python code", kind="skill",
+                                                     predicate="skill"))
+        sync.reconcile()
+        result = MemoryConsolidator(self.repo, sync, settings).run()
+        self.assertEqual(result["merged_semantic"], 1)
+        self.assertEqual(self.repo.get_memory(second)["status"], "archived")
+        self.assertEqual(self.repo.get_memory(second)["consolidated_into"], first)
+        self.assertNotIn(second, sync.store.ids())
+        stale_event = self.repo.connections.get().execute(
+            "SELECT count(*) FROM memory_events WHERE memory_id=? AND action='stale_review'",
+            (first,)).fetchone()[0]
+        self.assertEqual(stale_event, 1)
+
+    def test_recurring_theme_is_queued_for_confirmation_not_saved_as_fact(self):
+        conversation_id = self.repo.create_conversation()
+        for index, vector in enumerate(([1, 0, 0], [0, 1, 0], [0, 0, 1])):
+            self.repo.create_memory(MemoryInput(
+                layer="semantic", kind="skill", content="Synthetic skill fixture %d" % index,
+                subject="user", predicate="skill", embedding=np.asarray(vector, dtype=np.float32).tobytes(),
+                embedding_model="synthetic"))
+        result = MemoryConsolidator(self.repo, settings=EdithConfig(
+            database_path=self.root / "edith.db", index_path=self.root / "edith.faiss",
+            dup_threshold=0.99, stale_fact_days=99999)).run()
+        self.assertEqual(result["inferred_themes_queued"], 1)
+        self.assertEqual(self.repo.connections.get().execute(
+            "SELECT count(*) FROM memories WHERE predicate='inferred_theme' AND status='active'").fetchone()[0], 0)
+        pending = self.repo.connections.get().execute(
+            "SELECT reason,candidate_json FROM pending_confirmations WHERE conversation_id=?",
+            (conversation_id,)).fetchone()
+        self.assertEqual(pending["reason"], "inferred_theme")
+        self.assertIn('"confidence": 0.4', pending["candidate_json"])
 
     def test_hard_delete_removes_entity_links_and_keeps_content_free_audit(self):
         memory_id = self.repo.create_memory(self.memory("Sensitive-ish deletion fixture"))

@@ -88,6 +88,12 @@ class FoundationTests(unittest.TestCase):
         self.assertNotIn(secret, result.safe_text)
         self.assertEqual(result.safe_text, "My key is [REDACTED]")
 
+    def test_repository_rejects_secret_like_memory_fields(self):
+        with self.assertRaisesRegex(ValueError, "secret-like"):
+            self.repo.create_memory(MemoryInput(
+                layer="semantic", kind="profile_fact", content="A harmless fact",
+                subject="sk-1234567890abcdefghijklmn"))
+
 
 if __name__ == "__main__":
     unittest.main()

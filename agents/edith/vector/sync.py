@@ -58,7 +58,11 @@ class VectorSynchronizer:
         self.store.remove(int(memory_id))
         self.store.save(self.index_path)
         with self.repository._write_lock:
-            self._update_index_state(self.repository.connections.get())
+            db = self.repository.connections.get()
+            db.execute("UPDATE memories SET index_status='pending' WHERE id=? AND user_id=? "
+                       "AND status!='active'", (int(memory_id), self.repository.user_id))
+            db.commit()
+            self._update_index_state(db)
 
     def reconcile(self) -> dict[str, int | float | bool]:
         started = time.perf_counter()
@@ -110,6 +114,8 @@ class VectorSynchronizer:
                 self.store.save(self.index_path)
             with self.repository._write_lock:
                 db = self.repository.connections.get()
+                db.execute("UPDATE memories SET index_status='pending' WHERE user_id=? AND status!='active'",
+                           (self.repository.user_id,))
                 db.execute("UPDATE memories SET index_status='indexed' WHERE user_id=? AND status='active'",
                            (self.repository.user_id,))
                 db.commit()
@@ -152,15 +158,19 @@ class VectorSynchronizer:
         return result[:top_k]
 
     def verify_integrity(self) -> dict[str, object]:
-        db_ids = {int(row[0]) for row in self.repository.connections.get().execute(
-            "SELECT id FROM memories WHERE user_id=? AND status='active' AND embedding IS NOT NULL",
+        rows = self.repository.connections.get().execute(
+            "SELECT id,embedding FROM memories WHERE user_id=? AND status='active'",
             (self.repository.user_id,),
-        ).fetchall()}
+        ).fetchall()
+        active_ids = {int(row["id"]) for row in rows}
+        missing_embeddings = sorted(int(row["id"]) for row in rows if row["embedding"] is None)
         index_ids = self.store.ids()
-        return {"missing_ids": sorted(db_ids - index_ids),
-                "orphan_ids": sorted(index_ids - db_ids),
-                "sqlite_vector_count": len(db_ids), "index_vector_count": len(index_ids),
-                "ok": db_ids == index_ids}
+        return {"missing_ids": sorted(active_ids - index_ids),
+                "orphan_ids": sorted(index_ids - active_ids),
+                "missing_embeddings": missing_embeddings,
+                "sqlite_vector_count": len(active_ids) - len(missing_embeddings),
+                "active_memory_count": len(active_ids), "index_vector_count": len(index_ids),
+                "ok": active_ids == index_ids and not missing_embeddings}
 
     def rebuild_index(self) -> dict[str, int | float | bool]:
         self.index_path.unlink(missing_ok=True)

@@ -12,6 +12,7 @@ from pydantic import TypeAdapter, ValidationError
 from ..config import EdithConfig, config
 from ..db.repository import MemoryRepository
 from ..models import MemoryInput
+from ..layers.short_term import RollingSummaryService
 from ..time_utils import normalize_utc_timestamp
 from .prefilter import filter_messages
 from .prompts import SYSTEM_PROMPT, build_extraction_prompt, build_repair_prompt
@@ -57,6 +58,7 @@ class ExtractionService:
         self.settings = settings
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.synchronizer = synchronizer
+        self.rolling_summary = RollingSummaryService(repository, llm, settings)
         self.conflicts = SemanticConflictService(
             repository, LLMConflictAdjudicator(llm), synchronizer, settings.dup_threshold)
 
@@ -89,6 +91,11 @@ class ExtractionService:
             else:
                 skipped = len(user_messages)
             self.repository.mark_messages_extracted([row["id"] for row in messages])
+            try:
+                self.rolling_summary.maintain(conversation_id)
+            except Exception as summary_error:
+                logger.error("Rolling summary failed (conversation_id=%d,error_type=%s)",
+                             conversation_id, type(summary_error).__name__)
         except Exception as exc:
             logger.error("Extraction attempt failed (conversation_id=%d,error_type=%s)",
                          conversation_id, type(exc).__name__)
@@ -126,13 +133,16 @@ class ExtractionService:
             return "skipped"
         if candidate.importance < self.settings.min_importance or candidate.confidence < self.settings.min_confidence:
             return "skipped"
-        scan = scan_secrets(candidate.content)
-        if scan.has_secrets:
+        candidate_fields = [candidate.content, candidate.subject or "", candidate.predicate or ""]
+        for entity in candidate.entities:
+            candidate_fields.extend([entity.name, entity.type])
+        candidate_text = " ".join(candidate_fields)
+        if any(scan_secrets(value).has_secrets for value in candidate_fields):
             logger.info("Extraction candidate dropped by secret scan")
             return "skipped"
         if not candidate.content.strip():
             return "skipped"
-        categories = sensitive_categories(candidate.content)
+        categories = sensitive_categories(candidate_text)
         if categories:
             encoded_candidate = candidate.model_dump()
             encoded_candidate["occurred_at"] = normalize_utc_timestamp(

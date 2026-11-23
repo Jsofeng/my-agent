@@ -17,5 +17,9 @@
 - Rank context with the configured similarity, recency, importance, and use weights, use a 180-day recency half-life, and apply an 8-item per-layer quota within the token budget, because retrieval should balance relevant facts without flooding the prompt.
 - Reinforce exact and near-duplicate memories in place, use an injected validated adjudicator for single-valued semantic predicates, and keep unresolved contradictions as pending questions, because current facts need traceable history without silent replacement.
 - Consolidation creates a linked episodic summary and archives its sources; source rows remain intact and can be unarchived, because consolidation must not discard historical detail.
+- Rolling summaries update only after extraction batches and retain the configured recent-message window, because summary work should stay off the response path while recent turns remain verbatim.
+- Recurring themes discovered during consolidation enter `pending_confirmations` at low confidence instead of active semantic memory, because inferred patterns require user approval.
+- Stale semantic facts are marked with content-free `stale_review` audit events rather than changed to inactive, because age alone is not proof that a fact is false.
+- Pending conflict choices accept short first/second and old/new answers with surrounding sentence punctuation, because natural replies commonly include punctuation.
 - Pin Edith's new dependencies in `requirements-edith.txt`, because the repository contains no existing dependency manifest and a partial `requirements.txt` would misrepresent the full Jarvis environment.
 - Keep all timestamp fields as UTC ISO-8601 text and default the user timezone to `America/Toronto`, because temporal parsing and storage need a stable common representation.

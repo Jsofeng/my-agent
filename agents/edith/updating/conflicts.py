@@ -84,6 +84,8 @@ class SemanticConflictService:
                 db.execute("UPDATE memories SET superseded_by=? WHERE id=?", (memory_id, old_id))
                 db.commit()
         if self.synchronizer:
+            if relation == "update" and old_id is not None:
+                self.synchronizer.remove_from_index(old_id)
             self.synchronizer.index_memory(memory_id)
         return relation, memory_id
 
@@ -107,7 +109,7 @@ class SemanticConflictService:
                 now = utc_now()
                 with self.repository._write_lock:
                     db = self.repository.connections.get()
-                    db.execute("UPDATE memories SET status='superseded',valid_to=?,updated_at=? WHERE id=?",
+                    db.execute("UPDATE memories SET status='superseded',index_status='pending',valid_to=?,updated_at=? WHERE id=?",
                                (now, now, old["id"]))
                     self.repository._event(int(old["id"]), "supersede")
                     db.commit()

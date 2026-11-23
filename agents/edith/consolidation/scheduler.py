@@ -13,8 +13,10 @@ def create_scheduler(consolidator: MemoryConsolidator, timezone_name: str | None
     """Create a single-instance nightly scheduler without starting it."""
     from apscheduler.schedulers.background import BackgroundScheduler
     scheduler = BackgroundScheduler(timezone=timezone_name or config.user_timezone)
-    scheduler.add_job(consolidator.run, "cron", hour=3, minute=0, id="edith_consolidation",
-                      max_instances=1, coalesce=True, misfire_grace_time=3600)
+    scheduler.add_job(consolidator.run, "cron", hour=config.consolidation_hour,
+                      minute=config.consolidation_minute, id="edith_consolidation",
+                      max_instances=1, coalesce=True,
+                      misfire_grace_time=config.consolidation_misfire_grace_seconds)
     return scheduler
 
 

@@ -196,6 +196,16 @@ class ExtractionTests(unittest.TestCase):
         self.assertNotIn(secret.encode(), (self.root / "edith.db").read_bytes())
         self.assertNotIn(secret, "\n".join(logs.output))
 
+    def test_secret_in_candidate_entity_field_is_dropped(self):
+        self.user_turn("I am working with a fictional project.")
+        secret = "sk-1234567890abcdefghijklmn"
+        data = json.loads(candidate())
+        data[0]["entities"] = [{"name": secret, "type": "technology"}]
+        service = self.extractor(json.dumps(data))
+        self.assertEqual(service.process_conversation(self.conversation_id)["saved"], 0)
+        self.assertEqual(self.repo.list_memories(), [])
+        self.assertNotIn(secret.encode(), (self.root / "edith.db").read_bytes())
+
     def test_transient_llm_failure_keeps_messages_pending(self):
         self.user_turn("I prefer quiet workspaces.")
         llm = FakeLLM([RuntimeError("temporary provider failure")])

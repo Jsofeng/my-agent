@@ -89,15 +89,16 @@ if edith_config.enabled:
             synchronizer=edith_synchronizer)
         edith_worker = ExtractionWorker(edith_repository, edith_extractor, edith_config)
         edith_worker.start(catch_up=True)
-        register_shutdown_flush(edith_worker, timeout_seconds=10.0)
+        register_shutdown_flush(edith_worker, timeout_seconds=edith_config.shutdown_flush_timeout_seconds)
         edith_pending_confirmations = PendingConfirmationService(
             edith_repository, edith_synchronizer, edith_config.pending_confirmation_ttl_turns,
-            edith_config.user_timezone)
+            edith_config.user_timezone, conflict_service=edith_extractor.conflicts)
         edith_adapter = JarvisMemoryAdapter(
             edith_repository, edith_synchronizer, enabled=True,
             context_token_budget=edith_config.context_token_budget, top_k=edith_config.top_k,
             worker=edith_worker, pending_confirmations=edith_pending_confirmations,
-            conflict_service=edith_extractor.conflicts)
+            conflict_service=edith_extractor.conflicts,
+            consolidator=edith_consolidator)
     except Exception as exc:
         logging.getLogger(__name__).error("Edith initialization failed (error_type=%s)",
                                           type(exc).__name__)
@@ -198,6 +199,8 @@ class EmailConfirmationUI(GradioUI):
         consolidator = self.memory_consolidator or MemoryConsolidator(
             self.memory_repository, self.memory_synchronizer)
         try:
+            if self.memory_adapter is not None:
+                self.memory_adapter._ensure_ready()
             run_if_overdue(self.memory_repository, consolidator)
             if self.memory_scheduler is not None and not self._scheduler_started:
                 self.memory_scheduler.start()

@@ -113,6 +113,15 @@ class VectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "top_k"):
             self.sync.search("Citrus is a favorite", top_k=0)
 
+    def test_integrity_reports_active_rows_without_embeddings(self):
+        memory_id = self.add("Likes tart fruit")
+        report = self.sync.verify_integrity()
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["missing_ids"], [memory_id])
+        self.assertEqual(report["missing_embeddings"], [memory_id])
+        self.sync.reconcile()
+        self.assertTrue(self.sync.verify_integrity()["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

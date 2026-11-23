@@ -41,9 +41,9 @@ def build_memory_tools(repository: MemoryRepository, synchronizer: VectorSynchro
                 return "Memory not saved: unsupported layer or kind."
             if len(subject) > 200 or len(predicate) > 200:
                 return "Memory not saved: subject and predicate are limited to 200 characters."
-            if scan_secrets(content).has_secrets:
+            if scan_secrets(" ".join((content, subject, predicate))).has_secrets:
                 return "Memory not saved because it contains secret-like data. Remove it and try again."
-            categories = sensitive_categories(content)
+            categories = sensitive_categories(" ".join((content, subject, predicate)))
             if categories:
                 conversation_id = adapter.conversation_id
                 if conversation_id is None:
@@ -115,7 +115,8 @@ def build_memory_tools(repository: MemoryRepository, synchronizer: VectorSynchro
             old = repository.get_memory(memory_id)
             if old is None or old["status"] != "active":
                 return "Update failed: active memory does not exist. Search for it again."
-            categories = sensitive_categories(new_content)
+            categories = sensitive_categories(" ".join((new_content, old["subject"] or "",
+                                                          old["predicate"] or "")))
             if categories:
                 conversation_id = adapter.conversation_id
                 if conversation_id is None:
@@ -299,5 +300,22 @@ def build_memory_tools(repository: MemoryRepository, synchronizer: VectorSynchro
         except Exception as exc:
             return "List failed (%s)." % type(exc).__name__
 
+    @tool
+    def consolidate_memories() -> str:
+        """Queue an on-demand consolidation in the background; it never blocks the chat response.
+
+        Returns:
+            Whether a consolidation was queued or one is already running.
+        """
+        try:
+            if adapter.consolidator is None:
+                from ..consolidation.consolidator import MemoryConsolidator
+                adapter.consolidator = MemoryConsolidator(repository, synchronizer)
+            queued = adapter.consolidator.enqueue()
+            return ("Consolidation queued in the background." if queued else
+                    "A consolidation is already running; this request was coalesced.")
+        except Exception as exc:
+            return "Consolidation could not be queued (%s)." % type(exc).__name__
+
     return [save_memory, search_memory, update_memory, delete_memory, get_user_profile,
-            get_recent_events, get_project_context, list_memories]
+            get_recent_events, get_project_context, list_memories, consolidate_memories]

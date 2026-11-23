@@ -12,6 +12,8 @@ from ..models import MemoryInput
 from ..config import config
 from ..time_utils import normalize_utc_timestamp
 from ..vector.sync import VectorSynchronizer
+from .secrets import scan_secrets
+from ..updating.conflicts import SemanticConflictService
 
 
 logger = logging.getLogger(__name__)
@@ -21,11 +23,14 @@ _NO = re.compile(r"(?i)^\s*(?:no|no thanks|don't remember(?: that)?|do not remem
 
 class PendingConfirmationService:
     def __init__(self, repository: MemoryRepository, synchronizer: VectorSynchronizer,
-                 ttl_turns: int = 4, user_timezone: str = config.user_timezone):
+                 ttl_turns: int = 4, user_timezone: str = config.user_timezone,
+                 conflict_service: Optional[SemanticConflictService] = None):
         self.repository = repository
         self.synchronizer = synchronizer
         self.ttl_turns = ttl_turns
         self.user_timezone = user_timezone
+        self.conflicts = conflict_service or SemanticConflictService(
+            repository, synchronizer=synchronizer)
 
     def claim_prompt(self, conversation_id: int) -> bool:
         """Mark one unasked candidate as asked, so the UI asks only once."""
@@ -64,6 +69,15 @@ class PendingConfirmationService:
             pending_id, candidate_json = int(row[0]), row[1]
             candidate = json.loads(candidate_json)
             if yes:
+                fields = [candidate.get("content", ""), candidate.get("subject") or "",
+                          candidate.get("predicate") or ""]
+                for entity in candidate.get("entities", []):
+                    fields.extend([entity.get("name", ""), entity.get("type", "")])
+                if any(scan_secrets(str(field)).has_secrets for field in fields):
+                    db.execute("UPDATE pending_confirmations SET candidate_json='{}',status='rejected' WHERE id=?",
+                               (pending_id,))
+                    db.commit()
+                    return "That candidate contains secret-like data, so I did not save it."
                 item = MemoryInput(
                     layer=candidate["layer"], kind=candidate["kind"], content=candidate["content"],
                     subject=candidate.get("subject"), predicate=candidate.get("predicate"),
@@ -75,6 +89,7 @@ class PendingConfirmationService:
                     source_message_ids=json.dumps(candidate.get("source_message_ids", [])),
                 )
                 supersedes_id = candidate.get("supersedes_id")
+                needs_index = False
                 if supersedes_id is not None:
                     old = self.repository.get_memory(int(supersedes_id))
                     if old is None or old["status"] != "active":
@@ -88,22 +103,29 @@ class PendingConfirmationService:
                     except Exception as exc:
                         logger.error("Superseded memory index removal deferred (memory_id=%d,error_type=%s)",
                                      int(supersedes_id), type(exc).__name__)
+                    relation, saved_id = "update", memory_id
+                    needs_index = True
                 else:
-                    memory_id = self.repository.create_memory(item)
-                for entity in candidate.get("entities", []):
-                    entity_id = self.repository.add_entity(entity["name"], entity["type"])
-                    self.repository.link_entity(memory_id, entity_id)
-                    self.repository.link_conversation_entity(
-                        conversation_id, entity_id,
-                        (candidate.get("source_message_ids") or [None])[-1])
+                    relation, saved_id = self.conflicts.save(item)
+                    memory_id = saved_id
+                if memory_id is not None:
+                    for entity in candidate.get("entities", []):
+                        entity_id = self.repository.add_entity(entity["name"], entity["type"])
+                        self.repository.link_entity(memory_id, entity_id)
+                        self.repository.link_conversation_entity(
+                            conversation_id, entity_id,
+                            (candidate.get("source_message_ids") or [None])[-1])
                 db.execute("UPDATE pending_confirmations SET candidate_json='{}',status='confirmed' WHERE id=?",
                            (pending_id,))
                 db.commit()
-                try:
-                    self.synchronizer.index_memory(memory_id)
-                except Exception as exc:
-                    logger.error("Confirmed memory index deferred (memory_id=%d,error_type=%s)",
-                                 memory_id, type(exc).__name__)
+                if memory_id is not None and needs_index:
+                    try:
+                        self.synchronizer.index_memory(memory_id)
+                    except Exception as exc:
+                        logger.error("Confirmed memory index deferred (memory_id=%d,error_type=%s)",
+                                     memory_id, type(exc).__name__)
+                if relation == "pending":
+                    return "I noted the confirmed fact. I need one clarification before updating the saved fact."
                 return "Okay, I’ll remember that."
             db.execute("UPDATE pending_confirmations SET candidate_json='{}',status='rejected' WHERE id=?",
                        (pending_id,))

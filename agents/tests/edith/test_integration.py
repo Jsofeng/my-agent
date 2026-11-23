@@ -117,6 +117,24 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn(memory_id, self.synchronizer.store.ids())
         self.assertIn(current["id"], self.synchronizer.store.ids())
 
+    def test_semantic_conflict_question_is_asked_and_resolved_at_next_turn(self):
+        old_id = self.repository.create_memory(MemoryInput(
+            layer="semantic", kind="profile_fact", content="Works at OldCo",
+            subject="user", predicate="current_employer"))
+        self.synchronizer.index_memory(old_id)
+        self.repository.add_pending_question(
+            self.conversation_id, "semantic_conflict",
+            {"memory_id": old_id, "predicate": "current_employer", "new_content": "Works at NewCo"})
+        adapter = JarvisMemoryAdapter(self.repository, self.synchronizer)
+        block = adapter.before_response("What should I say?", self.conversation_id)
+        self.assertIn("Works at OldCo", block)
+        self.assertIn("Works at NewCo", block)
+        self.assertIn("<pending_question>", block)
+        answer = adapter.resolve_pending_response(self.conversation_id, "The second one.")
+        self.assertIn("updated", answer)
+        self.assertEqual(self.repository.get_memory(old_id)["status"], "superseded")
+        self.assertIsNone(self.repository.get_pending_question(self.conversation_id, "semantic_conflict"))
+
     def test_smolagents_save_and_search_tools_are_well_formed_and_safe(self):
         adapter = JarvisMemoryAdapter(self.repository, self.synchronizer)
         adapter.conversation_id = self.conversation_id
@@ -124,7 +142,7 @@ class IntegrationTests(unittest.TestCase):
         by_name = {item.name: item for item in tools}
         self.assertEqual(set(by_name), {"save_memory", "search_memory", "update_memory", "delete_memory",
                                         "get_user_profile", "get_recent_events", "get_project_context",
-                                        "list_memories"})
+                                        "list_memories", "consolidate_memories"})
         self.assertIn("content", by_name["save_memory"].inputs)
         self.assertIn("top_k", by_name["search_memory"].inputs)
         saved = by_name["save_memory"].forward(

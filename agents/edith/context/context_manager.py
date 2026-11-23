@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from html import escape
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -60,7 +61,8 @@ class ContextManager:
                 continue
             date = memory.get("occurred_at") or memory.get("updated_at") or "date unknown"
             text = "- [memory_id=%d; date=%s; layer=%s] %s" % (
-                memory["id"], date, memory["layer"], memory["content"])
+                memory["id"], escape(str(date), quote=True), memory["layer"],
+                escape(str(memory["content"]), quote=True))
             candidate = entries + [text]
             if len(self._render(candidate)) // 4 > self.token_budget:
                 continue

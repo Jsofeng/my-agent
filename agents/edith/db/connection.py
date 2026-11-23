@@ -27,6 +27,7 @@ class ConnectionManager:
             )
             connection.row_factory = sqlite3.Row
             connection.execute(f"PRAGMA busy_timeout = {int(self.busy_timeout_ms)}")
+            connection.execute("PRAGMA foreign_keys = ON")
             with self._all_lock:
                 if not self._wal_initialized:
                     connection.execute("PRAGMA journal_mode = WAL")

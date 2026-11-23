@@ -22,6 +22,9 @@ class EdithConfig:
     ambiguity_margin: float = 0.15
     entity_fuzzy_threshold: float = 0.86
     context_token_budget: int = 600
+    short_term_context_token_budget: int = 1200
+    rolling_summary_token_threshold: int = 1200
+    rolling_summary_recent_messages: int = 8
     top_k: int = 8
     weight_similarity: float = 0.55
     weight_recency: float = 0.20
@@ -32,6 +35,14 @@ class EdithConfig:
     pending_confirmation_ttl_turns: int = 4
     conversation_idle_hours: int = 6
     busy_timeout_ms: int = 5000
+    recency_half_life_days: float = 180.0
+    importance_annual_decay: float = 0.85
+    stale_fact_days: int = 180
+    stale_fact_max_accesses: int = 1
+    consolidation_hour: int = 3
+    consolidation_minute: int = 0
+    consolidation_misfire_grace_seconds: int = 3600
+    shutdown_flush_timeout_seconds: float = 10.0
 
     @classmethod
     def from_env(cls) -> "EdithConfig":

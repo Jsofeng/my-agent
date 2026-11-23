@@ -81,6 +81,14 @@ class MemoryRepository:
         rows = self.connections.get().execute(sql, args).fetchall()
         return [dict(row) for row in rows]
 
+    def recent_messages(self, conversation_id: int, limit: int = 8) -> list[dict[str, Any]]:
+        rows = self.connections.get().execute(
+            "SELECT * FROM (SELECT * FROM messages WHERE conversation_id=? "
+            "ORDER BY id DESC LIMIT ?) ORDER BY id",
+            (int(conversation_id), max(0, int(limit))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def mark_messages_extracted(self, message_ids: list[int]) -> None:
         if not message_ids:
             return
@@ -185,6 +193,88 @@ class MemoryRepository:
             self.connections.get().commit()
             return memory_id
 
+    def consolidate_memories(self, summary: MemoryInput, source_ids: list[int]) -> int:
+        """Atomically add a summary and archive/link all its active source rows."""
+        self._validate_memory(summary)
+        unique_ids = sorted(set(int(value) for value in source_ids))
+        if len(unique_ids) < 2:
+            raise ValueError("consolidation needs at least two source memories")
+        now = utc_now()
+        digest = hashlib.sha256(summary.content.strip().encode("utf-8")).hexdigest()
+        with self._write_lock:
+            db = self.connections.get()
+            try:
+                marks = ",".join("?" for _ in unique_ids)
+                rows = db.execute(
+                    "SELECT id FROM memories WHERE user_id=? AND status='active' AND id IN (" + marks + ")",
+                    [self.user_id] + unique_ids,
+                ).fetchall()
+                if len(rows) != len(unique_ids):
+                    raise ValueError("all consolidation sources must be active memories")
+                cursor = db.execute(
+                    """INSERT INTO memories(uuid,user_id,layer,kind,content,subject,predicate,importance,
+                    confidence,provenance,index_status,occurred_at,valid_from,source_conversation_id,
+                    source_message_ids,content_hash,embedding,embedding_model,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?)""",
+                    (str(uuid.uuid4()), self.user_id, summary.layer, summary.kind, summary.content,
+                     summary.subject, summary.predicate, summary.importance, summary.confidence,
+                     summary.provenance, summary.occurred_at, summary.valid_from,
+                     summary.source_conversation_id, summary.source_message_ids, digest,
+                     summary.embedding, summary.embedding_model, now, now),
+                )
+                summary_id = int(cursor.lastrowid)
+                db.execute(
+                    "INSERT INTO memory_entities(memory_id,entity_id,role) "
+                    "SELECT ?,entity_id,role FROM memory_entities WHERE memory_id IN (" + marks + ")",
+                    [summary_id] + unique_ids,
+                )
+                self._event(summary_id, "create")
+                for source_id in unique_ids:
+                    db.execute("UPDATE memories SET status='archived',index_status='pending',consolidated_into=?,updated_at=? WHERE id=?",
+                               (summary_id, now, source_id))
+                    self._event(source_id, "consolidate")
+                db.commit()
+                return summary_id
+            except Exception:
+                db.rollback()
+                raise
+
+    def merge_duplicate(self, source_id: int, target_id: int) -> None:
+        """Archive a near-duplicate semantic row into its surviving fact atomically."""
+        source_id, target_id = int(source_id), int(target_id)
+        if source_id == target_id:
+            return
+        now = utc_now()
+        with self._write_lock:
+            db = self.connections.get()
+            try:
+                source = db.execute(
+                    "SELECT importance,confidence FROM memories WHERE id=? AND user_id=? AND status='active'",
+                    (source_id, self.user_id),
+                ).fetchone()
+                target = db.execute(
+                    "SELECT importance,confidence FROM memories WHERE id=? AND user_id=? AND status='active'",
+                    (target_id, self.user_id),
+                ).fetchone()
+                if source is None or target is None:
+                    raise ValueError("both memories must be active")
+                db.execute(
+                    "INSERT OR IGNORE INTO memory_entities(memory_id,entity_id,role) "
+                    "SELECT ?,entity_id,role FROM memory_entities WHERE memory_id=?",
+                    (target_id, source_id),
+                )
+                db.execute("UPDATE memories SET importance=?,confidence=?,updated_at=? WHERE id=?",
+                           (max(float(source["importance"]), float(target["importance"])),
+                            max(float(source["confidence"]), float(target["confidence"])), now, target_id))
+                db.execute("UPDATE memories SET status='archived',index_status='pending',consolidated_into=?,updated_at=? WHERE id=?",
+                           (target_id, now, source_id))
+                self._event(target_id, "reinforce")
+                self._event(source_id, "merge")
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
     def supersede_memory(self, memory_id: int, item: MemoryInput) -> int:
         """Atomically preserve an old fact and insert its replacement."""
         self._validate_memory(item)
@@ -201,6 +291,7 @@ class MemoryRepository:
                     raise ValueError("active memory does not exist")
                 db.execute("UPDATE memories SET status='superseded',valid_to=?,updated_at=? WHERE id=?",
                            (now, now, int(memory_id)))
+                db.execute("UPDATE memories SET index_status='pending' WHERE id=?", (int(memory_id),))
                 self._event(int(memory_id), "supersede")
                 cursor = db.execute(
                     """INSERT INTO memories(uuid,user_id,layer,kind,content,subject,predicate,importance,
@@ -236,6 +327,9 @@ class MemoryRepository:
             raise ValueError("unsupported memory provenance")
         if not item.content or len(item.content) > 10000:
             raise ValueError("memory content must be 1 to 10000 characters")
+        for candidate_field in (item.content, item.subject or "", item.predicate or ""):
+            if scan_secrets(candidate_field).has_secrets:
+                raise ValueError("memory fields cannot contain secret-like data")
         if not (0 <= item.importance <= 1 and 0 <= item.confidence <= 1):
             raise ValueError("importance and confidence must be between 0 and 1")
 
@@ -272,6 +366,8 @@ class MemoryRepository:
             if field in changes and not 0 <= changes[field] <= 1:
                 raise ValueError(field + " must be between 0 and 1")
         changes["updated_at"] = utc_now()
+        if changes.get("status") and changes["status"] != "active":
+            changes["index_status"] = "pending"
         if "content" in changes:
             changes["content_hash"] = hashlib.sha256(changes["content"].strip().encode()).hexdigest()
             changes.setdefault("index_status", "pending")
@@ -302,7 +398,7 @@ class MemoryRepository:
                 if result and result[0] != 0:
                     raise RuntimeError("WAL checkpoint could not complete after hard delete")
             else:
-                db.execute("UPDATE memories SET status='deleted',updated_at=? WHERE id=? AND user_id=?",
+                db.execute("UPDATE memories SET status='deleted',index_status='pending',updated_at=? WHERE id=? AND user_id=?",
                            (utc_now(), int(memory_id), self.user_id))
                 self._event(memory_id, "delete")
                 db.commit()

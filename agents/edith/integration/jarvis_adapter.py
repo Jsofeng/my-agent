@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import logging
+import json
 import threading
+from html import escape
 from typing import Optional
 
 from ..context.context_manager import ContextManager
 from ..config import EdithConfig, config
 from ..db.repository import MemoryRepository
 from ..extraction.confirmations import PendingConfirmationService
+from ..layers.short_term import build_short_term_context
+from ..models import MemoryInput
 from .background_worker import ExtractionWorker
 from ..vector.sync import VectorSynchronizer
 
@@ -23,6 +27,7 @@ class JarvisMemoryAdapter:
                  worker: Optional[ExtractionWorker] = None,
                  pending_confirmations: Optional[PendingConfirmationService] = None,
                  conflict_service=None,
+                 consolidator=None,
                  settings: EdithConfig = config):
         self.repository = repository
         self.synchronizer = synchronizer
@@ -33,6 +38,7 @@ class JarvisMemoryAdapter:
         self.worker = worker
         self.pending_confirmations = pending_confirmations
         self.conflict_service = conflict_service
+        self.consolidator = consolidator
         self._ready = False
         self._init_lock = threading.Lock()
 
@@ -44,6 +50,24 @@ class JarvisMemoryAdapter:
             confirmation_prompt = False
             if conversation_id is not None and self.pending_confirmations is not None:
                 confirmation_prompt = self.pending_confirmations.claim_prompt(conversation_id)
+            semantic_question = (self.repository.get_pending_question(conversation_id, "semantic_conflict")
+                                 if conversation_id is not None else None)
+            if semantic_question is not None:
+                try:
+                    payload = json.loads(semantic_question["payload_json"])
+                    old = self.repository.get_memory(int(payload["memory_id"]))
+                    old_content = old["content"] if old else "previous saved fact"
+                    new_content = str(payload.get("new_content", "new fact"))
+                    prompt = ("I have two conflicting saved facts: first, '%s'; second, '%s'. "
+                              "Ask which one is current. Do not choose or use either as settled history." %
+                              (escape(str(old_content), quote=True), escape(new_content, quote=True)))
+                    blocks = ["<pending_question>" + prompt + "</pending_question>"]
+                    if confirmation_prompt:
+                        blocks.append("<pending_confirmation>Ask the user once: "
+                                      "Want me to remember that? Do not assume yes.</pending_confirmation>")
+                    return "\n".join(blocks)
+                except Exception:
+                    logger.error("Pending conflict question failed (error_type=RuntimeError)")
             resolution = self.context_manager.resolve(user_message, conversation_id)
             if resolution.status == "ambiguous":
                 blocks = ["<pending_question>Ask the user: %s Do not guess the reference. "
@@ -53,14 +77,17 @@ class JarvisMemoryAdapter:
                     blocks.append("<pending_confirmation>Ask the user once: "
                                   "Want me to remember that? Do not assume yes.</pending_confirmation>")
                 return "\n".join(blocks)
+            short_term = build_short_term_context(
+                self.repository, conversation_id, user_message, self.settings)
             count = self.repository.connections.get().execute(
                 "SELECT count(*) FROM memories WHERE user_id=? AND status='active'",
                 (self.repository.user_id,),
             ).fetchone()[0]
-            context = ""
+            context = short_term
             if count:
                 self._ensure_ready()
-                context = self.context_manager.build(user_message, conversation_id, resolution)
+                memory_context = self.context_manager.build(user_message, conversation_id, resolution)
+                context = "\n".join(part for part in (short_term, memory_context) if part)
             if confirmation_prompt:
                 context += ("\n<pending_confirmation>Ask the user once: "
                             "Want me to remember that? Do not assume yes.</pending_confirmation>")
@@ -96,12 +123,54 @@ class JarvisMemoryAdapter:
 
     def resolve_pending_response(self, conversation_id: Optional[int],
                                  user_message: str) -> Optional[str]:
-        if conversation_id is None or self.pending_confirmations is None:
+        if conversation_id is None:
             return None
+        if self.pending_confirmations is not None:
+            try:
+                result = self.pending_confirmations.resolve_reply(conversation_id, user_message)
+                if result is not None:
+                    return result
+            except Exception as exc:
+                logger.error("Pending confirmation resolution failed (error_type=%s)", type(exc).__name__)
         try:
-            return self.pending_confirmations.resolve_reply(conversation_id, user_message)
+            pending = self.repository.get_pending_question(conversation_id, "semantic_conflict")
+            if pending is None:
+                return None
+            payload = json.loads(pending["payload_json"])
+            old_id = int(payload["memory_id"])
+            old = self.repository.get_memory(old_id)
+            if old is None:
+                self.repository.resolve_pending_question(int(pending["id"]))
+                return None
+            normalized = " ".join(user_message.lower().strip().rstrip(".!?").split())
+            choose_old = normalized in {"first", "first one", "the first", "the first one",
+                                       "old", "old one", "keep the old one"}
+            choose_new = normalized in {"second", "second one", "the second", "the second one",
+                                       "new", "new one", "use the new one"}
+            new_content = str(payload.get("new_content", ""))
+            normalized_new = " ".join(new_content.lower().split())
+            normalized_old = " ".join(str(old["content"]).lower().split())
+            if not choose_new and normalized_new and normalized_new in normalized:
+                choose_new = True
+            if not choose_old and normalized_old and normalized_old in normalized:
+                choose_old = True
+            if not choose_old and not choose_new:
+                return None
+            if choose_new:
+                self._ensure_ready()
+                replacement = MemoryInput(
+                    layer="semantic", kind=old["kind"], content=new_content,
+                    subject=old["subject"], predicate=old["predicate"],
+                    importance=float(old["importance"]), confidence=0.9,
+                    provenance="user_stated", source_conversation_id=conversation_id,
+                )
+                new_id = self.repository.supersede_memory(old_id, replacement)
+                self.synchronizer.remove_from_index(old_id)
+                self.synchronizer.index_memory(new_id)
+            self.repository.resolve_pending_question(int(pending["id"]))
+            return "Okay, I’ll keep the existing fact." if choose_old else "Okay, I’ve updated the saved fact."
         except Exception as exc:
-            logger.error("Pending confirmation resolution failed (error_type=%s)", type(exc).__name__)
+            logger.error("Pending conflict resolution failed (error_type=%s)", type(exc).__name__)
             return None
 
     def end_conversation(self, conversation_id: Optional[int]) -> None:

@@ -126,7 +126,8 @@ def _inspector_actions(repository: MemoryRepository, synchronizer: VectorSynchro
                 return "Edit rejected because it contains secret-like data."
             if adapter is not None:
                 adapter._ensure_ready()
-            categories = sensitive_categories(new_content)
+            categories = sensitive_categories(" ".join((new_content, old["subject"] or "",
+                                                          old["predicate"] or "")))
             if categories:
                 conversation_id = getattr(adapter, "conversation_id", None)
                 if conversation_id is None:
@@ -195,11 +196,25 @@ def _inspector_actions(repository: MemoryRepository, synchronizer: VectorSynchro
 
     def consolidate():
         try:
-            return consolidator.run()
+            return {"queued": consolidator.enqueue(),
+                    "message": "Consolidation queued or already running."}
         except Exception as exc:
             return {"error": type(exc).__name__}
 
-    return browse, history, edit, delete, export, integrity, rebuild, vacuum, consolidate
+    def review_flags():
+        try:
+            rows = repository.connections.get().execute(
+                "SELECT m.id,m.kind,m.content,m.updated_at,m.access_count FROM memories m "
+                "JOIN memory_events ev ON ev.memory_id=m.id WHERE m.user_id=? AND m.layer='semantic' "
+                "AND m.status='active' AND ev.action='stale_review' ORDER BY ev.id DESC",
+                (repository.user_id,),
+            ).fetchall()
+            unique = {int(row["id"]): dict(row) for row in rows}
+            return list(unique.values()) or [{"message": "No stale semantic facts are flagged."}]
+        except Exception as exc:
+            return [{"error": type(exc).__name__}]
+
+    return browse, history, edit, delete, export, integrity, rebuild, vacuum, consolidate, review_flags
 
 
 def build_memory_inspector_tab(gr, repository: Optional[MemoryRepository],
@@ -214,7 +229,7 @@ def build_memory_inspector_tab(gr, repository: Optional[MemoryRepository],
         from .consolidation.consolidator import MemoryConsolidator
         actions = _inspector_actions(repository, synchronizer, adapter,
                                      consolidator or MemoryConsolidator(repository, synchronizer))
-        browse, history, edit, delete, export, integrity, rebuild, vacuum, consolidate = actions
+        browse, history, edit, delete, export, integrity, rebuild, vacuum, consolidate, review_flags = actions
         with gr.Row():
             layer = gr.Dropdown(["all", "semantic", "episodic"], value="all", label="Layer")
             kind = gr.Dropdown(["all", "event", "decision", "achievement", "experience", "preference",
@@ -249,8 +264,10 @@ def build_memory_inspector_tab(gr, repository: Optional[MemoryRepository],
             rebuild_button = gr.Button("Rebuild vector index")
             consolidate_button = gr.Button("Run consolidation")
             vacuum_button = gr.Button("Run optional VACUUM")
+            review_button = gr.Button("Show stale fact review flags")
         maintenance_result = gr.JSON(label="Maintenance result")
         check_button.click(integrity, outputs=maintenance_result)
         rebuild_button.click(rebuild, outputs=maintenance_result)
         consolidate_button.click(consolidate, outputs=maintenance_result)
+        review_button.click(review_flags, outputs=maintenance_result)
         vacuum_button.click(vacuum, outputs=action_status)
