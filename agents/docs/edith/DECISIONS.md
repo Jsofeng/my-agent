@@ -4,6 +4,11 @@
 - Prefix each user task with a delimited memory reference block, because the existing integration invokes `agent.run(task=...)` and does not pass display history or per-turn system prompts.
 - Add memory safety guidance to the system prompt only when `EDITH_ENABLED` is true, because the disabled path must preserve the original prompt and behavior.
 - Use Python 3.11 for integration validation; the machine's system `python3` is 3.9.6, while the app source uses Python 3.10 union syntax and smolagents 1.26.0 requires Python 3.10 or newer.
+- Redact common secret patterns before writing any chat message to SQLite, because the message log is also persisted data and must not become a path around the memory secret scanner.
+- Give background extraction its own `LiteLLMModel` instance at temperature zero, because extraction may run concurrently with a Gradio response and must not share mutable model call state.
+- Import Edith's vector/model dependencies only when `EDITH_ENABLED` is true and fail open if Edith initialization fails, because the disabled feature must not make the existing Jarvis startup depend on Edith packages or data.
+- Pre-filter acknowledgements, command-only turns, and generic questions without user-specific signals before extraction, because Groq calls should focus on durable personal information rather than routine chat.
+- Retry extraction provider failures three times with exponential backoff, leave exhausted batches unmarked, and retry them on the next startup, because a failed attempt must not silently discard memory candidates.
 - Keep FAISS behind a `VectorStore` interface and store embeddings in SQLite, because SQLite remains authoritative and FAISS can be rebuilt; `sqlite-vec` was rejected due to extension-loading requirements and project maturity.
 - Use `sentence-transformers/all-MiniLM-L6-v2` with 384-dimensional L2-normalized vectors in `IndexIDMap2(IndexFlatIP(384))`, because exact cosine search and SQLite IDs give straightforward deletion and recovery at personal scale.
 - Use Python's `sqlite3` module with WAL, a busy timeout, one thread-local connection per worker thread, and a repository write lock, because UI, extraction, and scheduler code share one database.

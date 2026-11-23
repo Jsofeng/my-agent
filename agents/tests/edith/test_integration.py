@@ -6,6 +6,7 @@ import numpy as np
 
 from edith.db import MemoryRepository
 from edith.embeddings.base import Embedder
+from edith.extraction.confirmations import PendingConfirmationService
 from edith.integration.jarvis_adapter import JarvisMemoryAdapter, build_agent_task
 from edith.models import MemoryInput
 from edith.tools import build_memory_tools
@@ -64,6 +65,35 @@ class IntegrationTests(unittest.TestCase):
         adapter = JarvisMemoryAdapter(self.repository, BrokenSynchronizer())
         prompt = "What work setting suits me?"
         self.assertEqual(build_agent_task(prompt, adapter, self.conversation_id), prompt)
+
+    def test_after_response_persists_both_turns_and_queues_extraction(self):
+        class Worker:
+            def __init__(inner):
+                inner.calls = []
+            def after_response(inner, conversation_id):
+                inner.calls.append(conversation_id)
+        worker = Worker()
+        adapter = JarvisMemoryAdapter(self.repository, self.synchronizer, worker=worker)
+        adapter.record_user_message(self.conversation_id, "I prefer quiet workspaces.")
+        self.assertEqual([row["role"] for row in self.repository.get_messages(self.conversation_id)],
+                         ["user"])
+        adapter.after_response(self.conversation_id, "I prefer quiet workspaces.", "Understood.")
+        self.assertEqual([row["role"] for row in self.repository.get_messages(self.conversation_id)],
+                         ["user", "assistant"])
+        self.assertEqual(worker.calls, [self.conversation_id])
+
+    def test_sensitive_confirmation_prompt_is_asked_once(self):
+        confirmations = PendingConfirmationService(self.repository, self.synchronizer)
+        self.repository.add_pending_confirmation(
+            self.conversation_id, {"layer": "semantic", "kind": "profile_fact",
+                                   "content": "A sensitive fact"},
+            "sensitive_category:health", expires_after_turn=4)
+        adapter = JarvisMemoryAdapter(
+            self.repository, self.synchronizer, pending_confirmations=confirmations)
+        first = adapter.before_response("Can you help me with a different question?", self.conversation_id)
+        second = adapter.before_response("Please continue with the question.", self.conversation_id)
+        self.assertIn("Want me to remember that?", first)
+        self.assertEqual(second, "")
 
     def test_smolagents_save_and_search_tools_are_well_formed_and_safe(self):
         adapter = JarvisMemoryAdapter(self.repository, self.synchronizer)

@@ -193,16 +193,34 @@ class GradioUI:
         import gradio as gr
 
         messages.append(gr.ChatMessage(role="user", content=prompt))
+        self.before_agent_response(prompt)
         yield messages
         task = self.prepare_agent_task(prompt)
+        assistant_message = ""
         for msg in stream_to_gradio(self.agent, task=task, reset_agent_memory=False):
             messages.append(msg)
+            content = getattr(msg, "content", None)
+            if (getattr(msg, "role", None) == "assistant" and isinstance(content, str)
+                    and content.startswith("**Final answer:**")):
+                assistant_message = content.split("\n", 1)[-1].strip()
+            elif (getattr(msg, "role", None) == "assistant" and content is not None
+                    and not isinstance(content, str) and not assistant_message):
+                assistant_message = "[non-text assistant response]"
             yield messages
+        self.after_agent_response(prompt, assistant_message)
         yield messages
 
     def prepare_agent_task(self, prompt):
         """Hook for subclasses to add private task context without changing display history."""
         return prompt
+
+    def before_agent_response(self, prompt):
+        """Hook for durable user-turn capture before the model starts generating."""
+        return None
+
+    def after_agent_response(self, prompt, assistant_message):
+        """Hook for persistence or post-response work after the assistant finishes."""
+        return None
 
     def upload_file(
         self,

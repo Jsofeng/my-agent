@@ -47,7 +47,10 @@ def build_memory_tools(repository: MemoryRepository, synchronizer: VectorSynchro
                     {"layer": layer, "kind": kind, "content": content.strip(),
                      "subject": subject or None, "predicate": predicate or None},
                     "sensitive_category:" + ",".join(categories),
-                    expires_after_turn=4,
+                    expires_after_turn=(adapter.pending_confirmations.ttl_turns
+                                        if adapter.pending_confirmations is not None else 4),
+                    asked=True,
+                    current_turn_offset=1,
                 )
                 return ("This may be sensitive information, so I have not saved it as a memory. "
                         "Want me to remember that? (confirmation %d)" % pending_id)

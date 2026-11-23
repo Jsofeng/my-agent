@@ -13,6 +13,7 @@ from typing import Any, Optional, Union
 
 from .connection import ConnectionManager
 from .migrations import apply_migrations
+from ..extraction.secrets import scan_secrets
 from ..models import ENTITY_TYPES, KINDS, LAYERS, MEMORY_STATUSES, PROVENANCE, MemoryInput
 
 
@@ -58,6 +59,8 @@ class MemoryRepository:
             raise ValueError("role must be user, assistant, or system")
         if not isinstance(content, str):
             raise TypeError("content must be text")
+        # Short-term chat storage also must not retain secret-like tokens.
+        content = scan_secrets(content).safe_text
         with self._write_lock:
             cursor = self.connections.get().execute(
                 "INSERT INTO messages(conversation_id,role,content,created_at,extracted) "
@@ -86,6 +89,60 @@ class MemoryRepository:
                 "UPDATE messages SET extracted=1 WHERE id=?", [(int(i),) for i in message_ids]
             )
             self.connections.get().commit()
+
+    def unextracted_messages(self, conversation_id: int,
+                             batch_user_messages: int = 8) -> list[dict[str, Any]]:
+        """Return through the Nth pending user turn with its intervening chat context."""
+        db = self.connections.get()
+        boundary = db.execute(
+            "SELECT id FROM messages WHERE conversation_id=? AND extracted=0 AND role='user' "
+            "ORDER BY id LIMIT 1 OFFSET ?",
+            (conversation_id, max(0, int(batch_user_messages) - 1)),
+        ).fetchone()
+        if boundary:
+            next_user = db.execute(
+                "SELECT id FROM messages WHERE conversation_id=? AND extracted=0 AND role='user' "
+                "AND id>? ORDER BY id LIMIT 1",
+                (conversation_id, int(boundary[0])),
+            ).fetchone()
+            max_id = (int(next_user[0]) - 1) if next_user else int(db.execute(
+                "SELECT max(id) FROM messages WHERE conversation_id=? AND extracted=0",
+                (conversation_id,),
+            ).fetchone()[0])
+            rows = db.execute(
+                "SELECT * FROM messages WHERE conversation_id=? AND extracted=0 AND id<=? ORDER BY id",
+                (conversation_id, max_id),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT * FROM messages WHERE conversation_id=? AND extracted=0 ORDER BY id",
+                (conversation_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def unextracted_conversation_ids(self) -> list[int]:
+        rows = self.connections.get().execute(
+            "SELECT DISTINCT conversation_id FROM messages WHERE extracted=0 ORDER BY conversation_id"
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    def count_unextracted_user_messages(self, conversation_id: int) -> int:
+        return int(self.connections.get().execute(
+            "SELECT count(*) FROM messages WHERE conversation_id=? AND extracted=0 AND role='user'",
+            (conversation_id,),
+        ).fetchone()[0])
+
+    def count_unextracted_messages(self, conversation_id: int) -> int:
+        return int(self.connections.get().execute(
+            "SELECT count(*) FROM messages WHERE conversation_id=? AND extracted=0",
+            (conversation_id,),
+        ).fetchone()[0])
+
+    def count_user_turns(self, conversation_id: int) -> int:
+        return int(self.connections.get().execute(
+            "SELECT count(*) FROM messages WHERE conversation_id=? AND role='user'",
+            (conversation_id,),
+        ).fetchone()[0])
 
     def save_summary(self, conversation_id: int, summary: str,
                      covers_up_to_message_id: Optional[int]) -> int:
@@ -239,17 +296,23 @@ class MemoryRepository:
             self.connections.get().commit()
 
     def add_pending_confirmation(self, conversation_id: int, candidate: dict[str, Any],
-                                 reason: str, expires_after_turn: int) -> int:
+                                 reason: str, expires_after_turn: int,
+                                 asked: bool = False, current_turn_offset: int = 0) -> int:
+        current_turn = self.count_user_turns(conversation_id)
+        expiry_turn = current_turn + max(1, int(expires_after_turn)) + max(0, int(current_turn_offset))
         with self._write_lock:
             cursor = self.connections.get().execute(
                 """INSERT INTO pending_confirmations(conversation_id,candidate_json,reason,created_at,
                 expires_after_turn,status) SELECT id,?,?,?,?,'pending' FROM conversations
                 WHERE id=? AND user_id=?""",
-                (json.dumps(candidate, ensure_ascii=False), reason, utc_now(), expires_after_turn,
+                (json.dumps(candidate, ensure_ascii=False), reason, utc_now(), expiry_turn,
                  conversation_id, self.user_id),
             )
             if cursor.rowcount != 1:
                 raise ValueError("conversation does not exist")
+            if asked:
+                self.connections.get().execute(
+                    "UPDATE pending_confirmations SET status='asked' WHERE id=?", (cursor.lastrowid,))
             self.connections.get().commit()
             return int(cursor.lastrowid)
 

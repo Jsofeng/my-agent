@@ -11,3 +11,5 @@ Edith enables SQLite secure deletion and checkpoints the WAL after a hard delete
 ## Dependency setup
 
 `requirements-edith.txt` pins Edith's new dependencies. It is not a complete dependency list for Jarvis because no project-wide manifest existed at the time this file was added.
+
+Set `EDITH_ENABLED=true` to enable memory integration. Background extraction uses the configured Groq-backed smolagents model after a conversation is idle, reaches the configured batch size, ends, or during shutdown flush. Tests use only fake model clients and do not call Groq. If retries are exhausted, unextracted turns remain in SQLite and startup catch-up retries them on the next launch.
