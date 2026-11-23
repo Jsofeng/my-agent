@@ -15,5 +15,7 @@
 - Track recently referenced entities per conversation and resolve implicit references from that short-term state before semantic retrieval; ask and persist a pending clarification when candidates are too close, because guessing historical context can fabricate a user's history.
 - Merge newly observed entity aliases instead of replacing existing aliases, because entity names may be re-extracted with only a subset of known aliases.
 - Rank context with the configured similarity, recency, importance, and use weights, use a 180-day recency half-life, and apply an 8-item per-layer quota within the token budget, because retrieval should balance relevant facts without flooding the prompt.
+- Reinforce exact and near-duplicate memories in place, use an injected validated adjudicator for single-valued semantic predicates, and keep unresolved contradictions as pending questions, because current facts need traceable history without silent replacement.
+- Consolidation creates a linked episodic summary and archives its sources; source rows remain intact and can be unarchived, because consolidation must not discard historical detail.
 - Pin Edith's new dependencies in `requirements-edith.txt`, because the repository contains no existing dependency manifest and a partial `requirements.txt` would misrepresent the full Jarvis environment.
 - Keep all timestamp fields as UTC ISO-8601 text and default the user timezone to `America/Toronto`, because temporal parsing and storage need a stable common representation.

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Protocol, Sequence
@@ -19,6 +18,7 @@ from .prompts import SYSTEM_PROMPT, build_extraction_prompt, build_repair_prompt
 from .schemas import ExtractedMemory
 from .secrets import scan_secrets
 from .sensitivity import sensitive_categories
+from ..updating.conflicts import LLMConflictAdjudicator, SemanticConflictService
 
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,8 @@ class ExtractionService:
         self.settings = settings
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.synchronizer = synchronizer
+        self.conflicts = SemanticConflictService(
+            repository, LLMConflictAdjudicator(llm), synchronizer, settings.dup_threshold)
 
     def process_conversation(self, conversation_id: int) -> dict[str, int]:
         messages = self.repository.unextracted_messages(
@@ -153,15 +155,7 @@ class ExtractionService:
             )
             return "pending"
         source_message_ids = [int(row["id"]) for row in messages if row["role"] == "user"]
-        content_hash = hashlib.sha256(candidate.content.strip().encode("utf-8")).hexdigest()
-        existing_memory = self.repository.connections.get().execute(
-            "SELECT id FROM memories WHERE user_id=? AND layer=? AND kind=? AND subject IS ? "
-            "AND content_hash=? AND status='active' LIMIT 1",
-            (self.repository.user_id, candidate.layer, candidate.kind, candidate.subject, content_hash),
-        ).fetchone()
-        if existing_memory:
-            return "skipped"
-        memory_id = self.repository.create_memory(MemoryInput(
+        item = MemoryInput(
             layer=candidate.layer, kind=candidate.kind, content=candidate.content,
             subject=candidate.subject, predicate=candidate.predicate,
             importance=candidate.importance, confidence=candidate.confidence,
@@ -169,12 +163,14 @@ class ExtractionService:
             occurred_at=normalize_utc_timestamp(candidate.occurred_at, self.settings.user_timezone),
             source_conversation_id=conversation_id,
             source_message_ids=json.dumps(source_message_ids),
-        ))
-        self._link_entities(memory_id, candidate.entities, conversation_id,
-                            source_message_ids[-1] if source_message_ids else None)
-        if self.synchronizer is not None:
-            self.synchronizer.index_memory(memory_id)
-        return "saved"
+        )
+        relation, memory_id = self.conflicts.save(item)
+        if relation == "pending":
+            return "pending"
+        if memory_id is not None:
+            self._link_entities(memory_id, candidate.entities, conversation_id,
+                                source_message_ids[-1] if source_message_ids else None)
+        return "saved" if relation != "pending" else "skipped"
 
     def _link_entities(self, memory_id: int, entities, conversation_id: int,
                        message_id: Optional[int]) -> None:

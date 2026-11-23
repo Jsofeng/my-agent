@@ -291,7 +291,7 @@ class ExtractionTests(unittest.TestCase):
         self.repo.add_message(second_conversation, "user", "I prefer morning meetings.")
         llm2 = FakeLLM([candidate(content="Prefers morning meetings")])
         worker2 = ExtractionWorker(
-            self.repo, ExtractionService(self.repo, llm2, self.settings, synchronizer=self.sync),
+            self.repo, ExtractionService(self.repo, llm2, self.settings),
             self.settings, max_retries=0)
         worker2.start(catch_up=True)
         self.assertTrue(worker2.flush(timeout=3.0))
