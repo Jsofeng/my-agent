@@ -134,10 +134,18 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("Prefers a quiet workspace", results)
         profile = by_name["get_user_profile"].forward()
         self.assertIn("Prefers a quiet workspace", profile)
+        project_id = self.repository.create_memory(MemoryInput(
+            layer="semantic", kind="project", content="Synthetic TestProject tracks milestones",
+            subject="TestProject"))
+        project_entity_id = self.repository.add_entity("TestProject", "project", ["TP"])
+        self.repository.link_entity(project_id, project_entity_id)
+        self.synchronizer.index_memory(project_id)
         listed = by_name["list_memories"].forward(page=1, page_size=10, status="active")
         self.assertIn("ID 1", listed)
-        project = by_name["get_project_context"].forward(project_name="unknown project")
-        self.assertIn("No saved project context", project)
+        filtered = by_name["list_memories"].forward(page=1, page_size=10, entity="TP")
+        self.assertIn("TestProject tracks milestones", filtered)
+        project = by_name["get_project_context"].forward(project_name="TestProject")
+        self.assertIn("TestProject tracks milestones", project)
         events = by_name["get_recent_events"].forward(days=30, top_k=10)
         self.assertIn("No recent", events)
         rejected = by_name["save_memory"].forward(
@@ -158,7 +166,9 @@ class IntegrationTests(unittest.TestCase):
         sensitive = by_name["save_memory"].forward(
             content="I was diagnosed with diabetes", kind="profile_fact")
         self.assertIn("Want me to remember that?", sensitive)
-        self.assertEqual(self.repository.list_memories(), [])
+        active_contents = [row["content"] for row in self.repository.list_memories()]
+        self.assertNotIn("I was diagnosed with diabetes", active_contents)
+        self.assertNotIn("Prefers a silent workspace", active_contents)
         pending = self.repository.connections.get().execute(
             "SELECT candidate_json FROM pending_confirmations WHERE conversation_id=?",
             (self.conversation_id,),
