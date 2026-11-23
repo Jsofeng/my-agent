@@ -68,7 +68,7 @@ class FoundationTests(unittest.TestCase):
         db = self.repo.connections.get()
         apply_migrations(db)
         apply_migrations(db)
-        self.assertEqual(db.execute("SELECT version FROM schema_version").fetchone()[0], 1)
+        self.assertEqual(db.execute("SELECT version FROM schema_version").fetchone()[0], 2)
         self.assertEqual(db.execute("SELECT count(*) FROM sqlite_master WHERE type='table' "
                                     "AND name='memories'").fetchone()[0], 1)
 

@@ -74,6 +74,12 @@ class PendingConfirmationService:
                     source_conversation_id=conversation_id,
                     source_message_ids=json.dumps(candidate.get("source_message_ids", [])),
                 ))
+                for entity in candidate.get("entities", []):
+                    entity_id = self.repository.add_entity(entity["name"], entity["type"])
+                    self.repository.link_entity(memory_id, entity_id)
+                    self.repository.link_conversation_entity(
+                        conversation_id, entity_id,
+                        (candidate.get("source_message_ids") or [None])[-1])
                 db.execute("UPDATE pending_confirmations SET candidate_json='{}',status='confirmed' WHERE id=?",
                            (pending_id,))
                 db.commit()

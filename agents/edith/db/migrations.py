@@ -82,6 +82,17 @@ MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_messages_extracted ON messages(extracted);
     CREATE INDEX IF NOT EXISTS idx_memory_entities_entity ON memory_entities(entity_id,memory_id);
     """,
+    """
+    CREATE TABLE IF NOT EXISTS conversation_entities (
+        conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        last_referenced_at TEXT NOT NULL, last_referenced_message_id INTEGER,
+        reference_count INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY(conversation_id, entity_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_conversation_entities_recent
+        ON conversation_entities(conversation_id,last_referenced_at DESC);
+    """,
 )
 
 

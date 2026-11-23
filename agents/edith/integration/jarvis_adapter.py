@@ -7,6 +7,7 @@ import threading
 from typing import Optional
 
 from ..context.context_manager import ContextManager
+from ..config import EdithConfig, config
 from ..db.repository import MemoryRepository
 from ..extraction.confirmations import PendingConfirmationService
 from .background_worker import ExtractionWorker
@@ -20,12 +21,14 @@ class JarvisMemoryAdapter:
     def __init__(self, repository: MemoryRepository, synchronizer: VectorSynchronizer,
                  enabled: bool = True, context_token_budget: int = 600, top_k: int = 8,
                  worker: Optional[ExtractionWorker] = None,
-                 pending_confirmations: Optional[PendingConfirmationService] = None):
+                 pending_confirmations: Optional[PendingConfirmationService] = None,
+                 settings: EdithConfig = config):
         self.repository = repository
         self.synchronizer = synchronizer
         self.enabled = enabled
         self.conversation_id: Optional[int] = None
-        self.context_manager = ContextManager(repository, synchronizer, context_token_budget, top_k)
+        self.context_manager = ContextManager(repository, synchronizer, context_token_budget, top_k, settings)
+        self.settings = settings
         self.worker = worker
         self.pending_confirmations = pending_confirmations
         self._ready = False
@@ -39,6 +42,15 @@ class JarvisMemoryAdapter:
             confirmation_prompt = False
             if conversation_id is not None and self.pending_confirmations is not None:
                 confirmation_prompt = self.pending_confirmations.claim_prompt(conversation_id)
+            resolution = self.context_manager.resolve(user_message, conversation_id)
+            if resolution.status == "ambiguous":
+                blocks = ["<pending_question>Ask the user: %s Do not guess the reference. "
+                          "Wait for the clarification before using historical details.</pending_question>" %
+                          (resolution.question or "Which one do you mean?")]
+                if confirmation_prompt:
+                    blocks.append("<pending_confirmation>Ask the user once: "
+                                  "Want me to remember that? Do not assume yes.</pending_confirmation>")
+                return "\n".join(blocks)
             count = self.repository.connections.get().execute(
                 "SELECT count(*) FROM memories WHERE user_id=? AND status='active'",
                 (self.repository.user_id,),
@@ -46,7 +58,7 @@ class JarvisMemoryAdapter:
             context = ""
             if count:
                 self._ensure_ready()
-                context = self.context_manager.build(user_message)
+                context = self.context_manager.build(user_message, conversation_id, resolution)
             if confirmation_prompt:
                 context += ("\n<pending_confirmation>Ask the user once: "
                             "Want me to remember that? Do not assume yes.</pending_confirmation>")

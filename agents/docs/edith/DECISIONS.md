@@ -12,5 +12,8 @@
 - Keep FAISS behind a `VectorStore` interface and store embeddings in SQLite, because SQLite remains authoritative and FAISS can be rebuilt; `sqlite-vec` was rejected due to extension-loading requirements and project maturity.
 - Use `sentence-transformers/all-MiniLM-L6-v2` with 384-dimensional L2-normalized vectors in `IndexIDMap2(IndexFlatIP(384))`, because exact cosine search and SQLite IDs give straightforward deletion and recovery at personal scale.
 - Use Python's `sqlite3` module with WAL, a busy timeout, one thread-local connection per worker thread, and a repository write lock, because UI, extraction, and scheduler code share one database.
+- Track recently referenced entities per conversation and resolve implicit references from that short-term state before semantic retrieval; ask and persist a pending clarification when candidates are too close, because guessing historical context can fabricate a user's history.
+- Merge newly observed entity aliases instead of replacing existing aliases, because entity names may be re-extracted with only a subset of known aliases.
+- Rank context with the configured similarity, recency, importance, and use weights, use a 180-day recency half-life, and apply an 8-item per-layer quota within the token budget, because retrieval should balance relevant facts without flooding the prompt.
 - Pin Edith's new dependencies in `requirements-edith.txt`, because the repository contains no existing dependency manifest and a partial `requirements.txt` would misrepresent the full Jarvis environment.
 - Keep all timestamp fields as UTC ISO-8601 text and default the user timezone to `America/Toronto`, because temporal parsing and storage need a stable common representation.

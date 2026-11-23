@@ -20,6 +20,7 @@ class EdithConfig:
     min_confidence: float = 0.6
     resolve_threshold: float = 0.6
     ambiguity_margin: float = 0.15
+    entity_fuzzy_threshold: float = 0.86
     context_token_budget: int = 600
     top_k: int = 8
     weight_similarity: float = 0.55

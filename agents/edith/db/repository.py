@@ -271,18 +271,30 @@ class MemoryRepository:
         if entity_type not in ENTITY_TYPES or not canonical_name.strip():
             raise ValueError("valid entity name and type are required")
         now = utc_now()
+        name = canonical_name.strip()
         with self._write_lock:
-            cursor = self.connections.get().execute(
+            db = self.connections.get()
+            existing = db.execute(
+                "SELECT id,aliases_json FROM entities WHERE user_id=? AND canonical_name=?",
+                (self.user_id, name),
+            ).fetchone()
+            merged_aliases = list(json.loads(existing["aliases_json"] or "[]")) if existing else []
+            for alias in aliases or []:
+                clean_alias = alias.strip()
+                if clean_alias and clean_alias.casefold() != name.casefold() and all(
+                    clean_alias.casefold() != old.casefold() for old in merged_aliases
+                ):
+                    merged_aliases.append(clean_alias)
+            db.execute(
                 """INSERT INTO entities(user_id,canonical_name,type,aliases_json,first_seen_at,last_seen_at)
                 VALUES(?,?,?,?,?,?) ON CONFLICT(user_id,canonical_name) DO UPDATE SET
                 type=excluded.type,aliases_json=excluded.aliases_json,last_seen_at=excluded.last_seen_at,
                 mention_count=entities.mention_count+1""",
-                (self.user_id, canonical_name.strip(), entity_type,
-                 json.dumps(aliases or [], ensure_ascii=False), now, now),
+                (self.user_id, name, entity_type, json.dumps(merged_aliases, ensure_ascii=False), now, now),
             )
             row = self.connections.get().execute(
                 "SELECT id FROM entities WHERE user_id=? AND canonical_name=?",
-                (self.user_id, canonical_name.strip()),
+                (self.user_id, name),
             ).fetchone()
             self.connections.get().commit()
             return int(row[0])
@@ -293,6 +305,57 @@ class MemoryRepository:
                 "INSERT OR IGNORE INTO memory_entities(memory_id,entity_id,role) VALUES(?,?,?)",
                 (int(memory_id), int(entity_id), role),
             )
+            self.connections.get().commit()
+
+    def link_conversation_entity(self, conversation_id: int, entity_id: int,
+                                 message_id: Optional[int] = None) -> None:
+        with self._write_lock:
+            self.connections.get().execute(
+                """INSERT INTO conversation_entities(conversation_id,entity_id,last_referenced_at,
+                last_referenced_message_id,reference_count) SELECT c.id,e.id,?,?,1 FROM conversations c,
+                entities e WHERE c.id=? AND c.user_id=? AND e.id=? AND e.user_id=?
+                ON CONFLICT(conversation_id,entity_id) DO UPDATE SET
+                last_referenced_at=excluded.last_referenced_at,
+                last_referenced_message_id=excluded.last_referenced_message_id,
+                reference_count=conversation_entities.reference_count+1""",
+                (utc_now(), message_id, conversation_id, self.user_id, entity_id, self.user_id),
+            )
+            self.connections.get().commit()
+
+    def recent_conversation_entities(self, conversation_id: int,
+                                     limit: int = 12) -> list[dict[str, Any]]:
+        rows = self.connections.get().execute(
+            """SELECT e.*,ce.last_referenced_at,ce.last_referenced_message_id,ce.reference_count
+            FROM conversation_entities ce JOIN entities e ON e.id=ce.entity_id
+            WHERE ce.conversation_id=? AND e.user_id=?
+            ORDER BY ce.last_referenced_at DESC,ce.reference_count DESC LIMIT ?""",
+            (conversation_id, self.user_id, max(0, int(limit))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def memory_entities(self, memory_id: int) -> list[dict[str, Any]]:
+        rows = self.connections.get().execute(
+            """SELECT e.*,me.role FROM memory_entities me JOIN entities e ON e.id=me.entity_id
+            WHERE me.memory_id=? AND e.user_id=? ORDER BY e.id""",
+            (int(memory_id), self.user_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_pending_question(self, conversation_id: int,
+                             kind: Optional[str] = None) -> Optional[dict[str, Any]]:
+        sql = "SELECT * FROM pending_questions WHERE conversation_id=? AND status='pending'"
+        params: list[Any] = [conversation_id]
+        if kind:
+            sql += " AND kind=?"
+            params.append(kind)
+        sql += " ORDER BY id LIMIT 1"
+        row = self.connections.get().execute(sql, params).fetchone()
+        return dict(row) if row else None
+
+    def resolve_pending_question(self, question_id: int) -> None:
+        with self._write_lock:
+            self.connections.get().execute(
+                "UPDATE pending_questions SET status='resolved' WHERE id=?", (int(question_id),))
             self.connections.get().commit()
 
     def add_pending_confirmation(self, conversation_id: int, candidate: dict[str, Any],

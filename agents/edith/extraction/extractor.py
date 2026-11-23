@@ -132,7 +132,7 @@ class ExtractionService:
             return "skipped"
         categories = sensitive_categories(candidate.content)
         if categories:
-            encoded_candidate = candidate.model_dump(exclude={"entities"})
+            encoded_candidate = candidate.model_dump()
             encoded_candidate["occurred_at"] = normalize_utc_timestamp(
                 candidate.occurred_at, self.settings.user_timezone)
             encoded_candidate["source_message_ids"] = [
@@ -170,6 +170,15 @@ class ExtractionService:
             source_conversation_id=conversation_id,
             source_message_ids=json.dumps(source_message_ids),
         ))
+        self._link_entities(memory_id, candidate.entities, conversation_id,
+                            source_message_ids[-1] if source_message_ids else None)
         if self.synchronizer is not None:
             self.synchronizer.index_memory(memory_id)
         return "saved"
+
+    def _link_entities(self, memory_id: int, entities, conversation_id: int,
+                       message_id: Optional[int]) -> None:
+        for entity in entities:
+            entity_id = self.repository.add_entity(entity.name, entity.type)
+            self.repository.link_entity(memory_id, entity_id)
+            self.repository.link_conversation_entity(conversation_id, entity_id, message_id)
