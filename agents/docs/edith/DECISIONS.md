@@ -1,0 +1,25 @@
+# Edith decisions
+
+- Use a new conversation per Gradio browser session/app launch, and start a new conversation after six idle hours, because the current UI has session state but no clear-chat action.
+- Prefix each user task with a delimited memory reference block, because the existing integration invokes `agent.run(task=...)` and does not pass display history or per-turn system prompts.
+- Add memory safety guidance to the system prompt only when `EDITH_ENABLED` is true, because the disabled path must preserve the original prompt and behavior.
+- Use Python 3.11 for integration validation; the machine's system `python3` is 3.9.6, while the app source uses Python 3.10 union syntax and smolagents 1.26.0 requires Python 3.10 or newer.
+- Redact common secret patterns before writing any chat message to SQLite, because the message log is also persisted data and must not become a path around the memory secret scanner.
+- Give background extraction its own `LiteLLMModel` instance at temperature zero, because extraction may run concurrently with a Gradio response and must not share mutable model call state.
+- Import Edith's vector/model dependencies only when `EDITH_ENABLED` is true and fail open if Edith initialization fails, because the disabled feature must not make the existing Jarvis startup depend on Edith packages or data.
+- Pre-filter acknowledgements, command-only turns, and generic questions without user-specific signals before extraction, because Groq calls should focus on durable personal information rather than routine chat.
+- Retry extraction provider failures three times with exponential backoff, leave exhausted batches unmarked, and retry them on the next startup, because a failed attempt must not silently discard memory candidates.
+- Keep FAISS behind a `VectorStore` interface and store embeddings in SQLite, because SQLite remains authoritative and FAISS can be rebuilt; `sqlite-vec` was rejected due to extension-loading requirements and project maturity.
+- Use `sentence-transformers/all-MiniLM-L6-v2` with 384-dimensional L2-normalized vectors in `IndexIDMap2(IndexFlatIP(384))`, because exact cosine search and SQLite IDs give straightforward deletion and recovery at personal scale.
+- Use Python's `sqlite3` module with WAL, a busy timeout, one thread-local connection per worker thread, and a repository write lock, because UI, extraction, and scheduler code share one database.
+- Track recently referenced entities per conversation and resolve implicit references from that short-term state before semantic retrieval; ask and persist a pending clarification when candidates are too close, because guessing historical context can fabricate a user's history.
+- Merge newly observed entity aliases instead of replacing existing aliases, because entity names may be re-extracted with only a subset of known aliases.
+- Rank context with the configured similarity, recency, importance, and use weights, use a 180-day recency half-life, and apply an 8-item per-layer quota within the token budget, because retrieval should balance relevant facts without flooding the prompt.
+- Reinforce exact and near-duplicate memories in place, use an injected validated adjudicator for single-valued semantic predicates, and keep unresolved contradictions as pending questions, because current facts need traceable history without silent replacement.
+- Consolidation creates a linked episodic summary and archives its sources; source rows remain intact and can be unarchived, because consolidation must not discard historical detail.
+- Rolling summaries update only after extraction batches and retain the configured recent-message window, because summary work should stay off the response path while recent turns remain verbatim.
+- Recurring themes discovered during consolidation enter `pending_confirmations` at low confidence instead of active semantic memory, because inferred patterns require user approval.
+- Stale semantic facts are marked with content-free `stale_review` audit events rather than changed to inactive, because age alone is not proof that a fact is false.
+- Pending conflict choices accept short first/second and old/new answers with surrounding sentence punctuation, because natural replies commonly include punctuation.
+- Pin Edith's new dependencies in `requirements-edith.txt`, because the repository contains no existing dependency manifest and a partial `requirements.txt` would misrepresent the full Jarvis environment.
+- Keep all timestamp fields as UTC ISO-8601 text and default the user timezone to `America/Toronto`, because temporal parsing and storage need a stable common representation.

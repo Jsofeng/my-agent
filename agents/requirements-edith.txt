@@ -1,0 +1,6 @@
+# Edith-only dependencies. Jarvis currently has no checked-in dependency manifest.
+faiss-cpu==1.13.0
+sentence-transformers==5.1.2
+apscheduler==3.11.3
+pydantic==2.13.5
+pytest==8.4.2
